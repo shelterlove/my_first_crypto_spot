@@ -41,7 +41,7 @@ Get-ChildItem src\crypto_spot_v1\*.py, scripts\run_v1_backtest.py, tests\test_v1
 
 The repaired V1 reference is:
 
-- latest reproduced run: `results/v1/20260521_224736`
+- latest reproduced run: `results/v1/20260521_232254`
 - score: `0.6277`
 - mean return: `160.37%`
 - mean excess: `9.64%`

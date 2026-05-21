@@ -24,7 +24,7 @@ methodology, but the runtime strategy code is now flattened into a clean
 - Smoke test passed for execution timing, warmup exclusion, accounting
   reconstruction, action-count reconciliation, and Buy & Hold fee-adjusted
   initial buy.
-- Full V1 baseline reproduced at `results/v1/20260521_224736`.
+- Full V1 baseline reproduced at `results/v1/20260521_232254`.
 - V1 metrics match repaired legacy V6.19 run `results/v6_19/20260521_163754`
   exactly on score, return, excess, drawdown, trades, exposure, and turnover.
 - Result artifact checks:
