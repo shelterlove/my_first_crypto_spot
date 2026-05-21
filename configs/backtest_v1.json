@@ -1,0 +1,33 @@
+{
+  "symbols": ["BTC/USDT", "ETH/USDT", "BNB/USDT"],
+  "timeframe": "1d",
+  "warmup_bars": 200,
+  "execution": {
+    "mode": "next_open"
+  },
+  "windows": [
+    {"name": "365d", "days": 365, "step_days": 60},
+    {"name": "730d", "days": 730, "step_days": 90},
+    {"name": "1095d", "days": 1095, "step_days": 120}
+  ],
+  "strategies": ["buy_hold", "v1"],
+  "capital": {
+    "initial": 100.0,
+    "reserve": 20.0
+  },
+  "cost": {
+    "fee_rate": 0.001
+  },
+  "evaluation": {
+    "min_win_rate_vs_bh": 0.50,
+    "min_median_excess_return": 0.0,
+    "max_trade_count_per_365d": 80,
+    "scoring": {
+      "return_weight": 0.30,
+      "drawdown_weight": 0.30,
+      "calmar_weight": 0.20,
+      "consistency_weight": 0.10,
+      "trade_frequency_weight": 0.10
+    }
+  }
+}
