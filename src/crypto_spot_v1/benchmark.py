@@ -14,6 +14,7 @@ from .metrics import StrategySummary, StratPerf, compute_score
 from .rolling_windows import run_strategy_rolling
 from .strategy_rebalance import Action, PortfolioStrategyBase
 from .strategy import V1SpotStrategy
+from .strategy_candidates import V1LessChurnStrategy
 
 
 class BuyHoldStrategy(PortfolioStrategyBase):
@@ -51,6 +52,7 @@ class BuyHoldStrategy(PortfolioStrategyBase):
 STRATEGY_CLASSES = {
     "buy_hold": BuyHoldStrategy,
     "v1": V1SpotStrategy,
+    "v1_less_churn": V1LessChurnStrategy,
 }
 
 

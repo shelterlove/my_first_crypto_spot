@@ -25,6 +25,12 @@ Run a V1 baseline:
 python scripts\run_v1_backtest.py
 ```
 
+Run a controlled optimization experiment:
+
+```powershell
+python scripts\run_v1_backtest.py --candidate v1_less_churn
+```
+
 Run smoke tests:
 
 ```powershell
