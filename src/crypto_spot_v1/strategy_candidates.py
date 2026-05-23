@@ -494,20 +494,26 @@ class V12Strategy(V11Strategy):
 
 
 class V13Strategy(V12Strategy):
-    """V1.3: confirmed-BULL sell target override for raw MIXED flickers.
+    """V1.3: BULL sell-target override for raw MIXED flickers + skip sells during bull pullbacks.
 
-    V1.2 has an asymmetry: sell_target uses raw_state while buy_target uses
-    confirmed_state.  When raw_state momentarily flicks to MIXED during an
-    otherwise healthy bull, the sell target plunges from 98% to 65%, forcing
-    a large premature sell (~44% of target-reduce sells are "too early" with
-    avg +1.84% 20d forward return).
+    V1.2 sells into raw-state transitions rather than confirmed-state ones.
+    When raw_state flicks to MIXED during a healthy bull, the sell target
+    plunges from 98% to 65%, forcing a premature sell.  Separately, even
+    with the V1.2 less-churn band, the strategy sells during temporary bull
+    pullbacks and then misses the recovery because trend_risk / btc_bear
+    blocks prevent timely reentry for weeks or months.
 
-    V1.3 keeps the sell logic 100% intact except: when raw_state == MIXED
-    and confirmed_state == BULL, the sell target uses the BULL table with a
-    +1 risk_score penalty instead of the MIXED table.  This prevents the
-    massive target gap on MIXED flickers while still applying a penalty for
-    the MIXED signal.  All other cases (incl. fully confirmed transitions)
-    are unchanged.
+    V1.3 changes:
+    1. When raw_state == MIXED and confirmed_state == BULL, the sell target
+       uses the BULL table with +1 risk penalty instead of the MIXED table.
+    2. During bull pullbacks (confirmed=BULL, ema24>ema72, price between
+       ema72 and ema24), target-reduce and risk-reduce sells are skipped.
+    3. Wider sell threshold (0.10 vs 0.06) in BULL state prevents tiny
+       trims (gap < 10%) that don't materially protect but do create a
+       drag on bull-market participation.
+
+    Together these keep the position intact through normal volatility while
+    still selling on genuine trend deterioration.
     """
 
     VERSION_LABEL = "v1_3"
@@ -517,15 +523,39 @@ class V13Strategy(V12Strategy):
         return "v1_3"
 
     def _get_sell_target_state(self, raw_state: str, confirmed_state: str) -> tuple[str, int]:
-        """Override state for sell target lookup.
-
-        Returns (lookup_state, risk_penalty).
-        When raw_state flicks to MIXED but confirmed still BULL, use BULL
-        targets with +1 risk penalty instead of MIXED targets.
+        """When raw_state flicks to MIXED but confirmed is still BULL,
+        use the BULL table with +1 risk penalty.  The penalty ensures we
+        still trim modestly (BULL[1]=0.95) even at low risk scores instead
+        of holding at full 98% through a mixed signal.
         """
         if raw_state == "MIXED" and confirmed_state == "BULL":
             return "BULL", 1
         return raw_state, 0
+
+    def _is_bull_pullback(
+        self,
+        latest: pd.Series,
+        price: float,
+        confirmed_state: str,
+        trend_risk: int,
+    ) -> bool:
+        """True when price has dipped within an otherwise healthy uptrend.
+
+        A bull pullback means: confirmed regime is BULL, short-term trend
+        is still rising (ema24 > ema72), but price has retraced below
+        ema24 while staying above ema72.  Selling here crystallises a
+        loss and the subsequent recovery is typically missed because
+        trend_risk / btc_bear blocks buy reentry for weeks.
+        """
+        if confirmed_state != "BULL":
+            return False
+        if trend_risk >= 2:
+            return False
+        ema24 = latest.get("ema24")
+        ema72 = latest.get("ema72")
+        if pd.isna(ema24) or pd.isna(ema72):
+            return False
+        return bool(ema24 > ema72 and price > ema72 and price <= ema24)
 
     def compute_actions(
         self,
@@ -655,6 +685,16 @@ class V13Strategy(V12Strategy):
             raw_state=raw_state,
             drawdown_risk=drawdown_risk,
         )
+
+        # V1.3: skip target-reduce/risk-reduce sells during bull pullbacks
+        if sell_setup in ("target-reduce", "risk-reduce"):
+            if self._is_bull_pullback(latest, price, confirmed_state, trend_risk):
+                sell_target = max(sell_target, current_pct)
+
+        # V1.3: wider sell band in BULL — prevents tiny trims (gap < 10%)
+        # that reduce position on normal volatility without real protection.
+        bull_sell_threshold = 0.10 if confirmed_state == "BULL" else self.MIN_ADJUST_THRESHOLD
+
         sell_threshold, max_sell, sell_guard = self._adjust_sell_execution(
             latest=latest,
             price=price,
@@ -664,7 +704,7 @@ class V13Strategy(V12Strategy):
             drawdown_risk=drawdown_risk,
             risk_score=risk_score,
             sell_setup=sell_setup,
-            sell_threshold=self.MIN_ADJUST_THRESHOLD,
+            sell_threshold=bull_sell_threshold,
             max_sell=self._base_max_sell(trend_risk, risk_score),
         )
 
@@ -732,6 +772,10 @@ class V13Strategy(V12Strategy):
             max_buy = min(cfg.get("max_buy", 0.25) * 1.5, gap)
         else:
             max_buy = cfg.get("max_buy", 0.25)
+
+        # V1.3: faster reentry in BULL — rebuild position quicker after sells
+        if confirmed_state == "BULL" and current_pct < 0.85:
+            max_buy = max(max_buy, 0.35)
 
         max_buy, buy_guard = self._adjust_buy_execution(
             latest=latest,
