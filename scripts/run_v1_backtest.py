@@ -14,8 +14,7 @@ if str(PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from crypto_spot_v1.benchmark import V1BenchmarkRunner
-from crypto_spot_v1.report import generate_html
-from crypto_spot_v1.results_io import save_structured_results
+from crypto_spot_v1.evaluation import COMPLETE_MODE, VALID_MODES, normalize_mode, save_evaluation_run
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,10 +24,21 @@ def parse_args() -> argparse.Namespace:
         default="v1",
         help="Registered strategy candidate to compare against buy_hold.",
     )
+    parser.add_argument(
+        "--mode",
+        choices=sorted(VALID_MODES),
+        default=COMPLETE_MODE,
+        help="Compatibility option. All modes now run the same complete evaluation flow.",
+    )
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="Compatibility option. Diagnostics are enabled by default in the complete flow.",
+    )
     return parser.parse_args()
 
 
-def main(candidate_name: str) -> None:
+def main(candidate_name: str, mode: str, diagnostics: bool = False) -> None:
     config_path = PROJECT_ROOT / "configs" / "backtest_v1.json"
     output_dir = PROJECT_ROOT / "results"
     runner = V1BenchmarkRunner(str(config_path), output_dir=str(output_dir))
@@ -38,34 +48,27 @@ def main(candidate_name: str) -> None:
     verdict = runner.check_promotion(results, candidate_name)
 
     ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-    structured_dir = save_structured_results(
+    effective_mode = normalize_mode(mode)
+    run_dir = save_evaluation_run(
+        runner=runner,
         results=results,
         scores=scores,
         verdict=verdict,
-        config=runner.config,
-        output_dir=output_dir,
         candidate_name=candidate_name,
+        mode=effective_mode,
         timestamp=ts,
-        artifacts=runner.artifacts,
+        config_path=config_path,
+        output_root=output_dir,
+        diagnostics_enabled=True,
     )
 
-    html = generate_html(
-        results=results,
-        scores=scores,
-        verdict=verdict,
-        candidate_name=candidate_name,
-        config=runner.config,
-    )
-    report_path = output_dir / f"backtest_report_{candidate_name}_{ts}.html"
-    report_path.write_text(html, encoding="utf-8")
-
-    print(f"{candidate_name} backtest complete")
+    print(f"{candidate_name} complete evaluation complete")
     for name, score in sorted(scores.items(), key=lambda item: item[1], reverse=True):
         print(f"{name}: score={score:.4f}")
-    print(f"structured_dir={structured_dir}")
-    print(f"report_path={report_path}")
+    print(f"run_dir={run_dir}")
+    print(f"report_path={run_dir / 'html_report.html'}")
 
 
 if __name__ == "__main__":
     args = parse_args()
-    main(args.candidate)
+    main(args.candidate, args.mode, args.diagnostics)

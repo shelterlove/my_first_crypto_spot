@@ -96,6 +96,8 @@ def run_rebalance_backtest(
         execution_prices: dict[str, float] = {}
         mark_prices: dict[str, float] = {}
         signal_timestamps: dict[str, pd.Timestamp] = {}
+        indicator_timestamps: dict[str, pd.Timestamp] = {}
+        btc_regime_timestamps: dict[str, pd.Timestamp] = {}
 
         for symbol, df in candle_dfs.items():
             pos = int(ts_positions[symbol][idx])
@@ -115,8 +117,11 @@ def run_rebalance_backtest(
             if signal_pos > 0 and price_row_pos >= 0:
                 truncated[symbol] = df.iloc[:signal_pos]
                 price_row = df.iloc[price_row_pos]
+                signal_row = df.iloc[signal_pos - 1]
                 execution_prices[symbol] = float(price_row[price_col])
-                signal_timestamps[symbol] = df.iloc[signal_pos - 1]["timestamp"]
+                signal_timestamps[symbol] = signal_row["timestamp"]
+                indicator_timestamps[symbol] = signal_row["timestamp"]
+                btc_regime_timestamps[symbol] = signal_row.get("btc_regime_timestamp")
             else:
                 truncated[symbol] = df.iloc[:0]
 
@@ -139,6 +144,8 @@ def run_rebalance_backtest(
             action_records.append({
                 "timestamp": ts,
                 "signal_timestamp": signal_timestamps.get(action.symbol),
+                "indicator_timestamp": indicator_timestamps.get(action.symbol),
+                "btc_regime_timestamp": btc_regime_timestamps.get(action.symbol),
                 "execution_mode": execution_mode,
                 "symbol": action.symbol,
                 "side": action.side,

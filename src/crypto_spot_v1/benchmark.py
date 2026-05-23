@@ -14,7 +14,7 @@ from .metrics import StrategySummary, StratPerf, compute_score
 from .rolling_windows import run_strategy_rolling
 from .strategy_rebalance import Action, PortfolioStrategyBase
 from .strategy import V1SpotStrategy
-from .strategy_candidates import V1LessChurnStrategy
+from .strategy_candidates import V11Strategy, V12Strategy, V13Strategy, V1LessChurnStrategy
 
 
 class BuyHoldStrategy(PortfolioStrategyBase):
@@ -53,6 +53,9 @@ STRATEGY_CLASSES = {
     "buy_hold": BuyHoldStrategy,
     "v1": V1SpotStrategy,
     "v1_less_churn": V1LessChurnStrategy,
+    "v1_1": V11Strategy,
+    "v1_2": V12Strategy,
+    "v1_3": V13Strategy,
 }
 
 
@@ -88,8 +91,10 @@ class V1BenchmarkRunner:
             return all_dfs
         btc_regime = strategy_utils.compute_btc_regime(all_dfs["BTC/USDT"])
         regime_map = dict(zip(all_dfs["BTC/USDT"]["timestamp"], btc_regime))
+        regime_ts_map = dict(zip(all_dfs["BTC/USDT"]["timestamp"], all_dfs["BTC/USDT"]["timestamp"]))
         for df in all_dfs.values():
             df["btc_regime"] = df["timestamp"].map(regime_map).ffill()
+            df["btc_regime_timestamp"] = df["timestamp"].map(regime_ts_map).ffill()
         return all_dfs
 
     def run_all(self, candidate_name: str = "v1") -> dict[str, StrategySummary]:
