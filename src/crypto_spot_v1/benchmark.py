@@ -47,6 +47,10 @@ from .strategy_candidates import (
     V19IStrategy,
     V19JStrategy,
     V19KStrategy,
+    V19LStrategy,
+    V19MStrategy,
+    V19NStrategy,
+    V19OStrategy,
     V1LessChurnStrategy,
 )
 
@@ -108,7 +112,8 @@ STRATEGY_CLASSES = {
     "v1_6E": V16EStrategy,
     "v1_7": V17Strategy,
     "v1_8": V18Strategy,
-    "v1_9": V19Strategy,
+    "v1_9": V19KStrategy,   # V1.9 = V1.9K (the validated best variant)
+    "v1_9_orig": V19Strategy,  # original V1.9 (weak BULL retention, kept for reference)
     "v1_9A": V19AStrategy,
     "v1_9B": V19BStrategy,
     "v1_9C": V19CStrategy,
@@ -120,6 +125,10 @@ STRATEGY_CLASSES = {
     "v1_9I": V19IStrategy,
     "v1_9J": V19JStrategy,
     "v1_9K": V19KStrategy,
+    "v1_9L": V19LStrategy,
+    "v1_9M": V19MStrategy,
+    "v1_9N": V19NStrategy,
+    "v1_9O": V19OStrategy,
 }
 
 

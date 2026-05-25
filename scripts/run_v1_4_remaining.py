@@ -13,7 +13,7 @@ from crypto_spot_v1.benchmark import V1BenchmarkRunner
 from crypto_spot_v1.metrics import compute_score
 from crypto_spot_v1.evaluation import save_evaluation_run
 
-CANDIDATES = ["v1_9K"]
+CANDIDATES = ["v1_9O"]
 
 
 def main() -> None:

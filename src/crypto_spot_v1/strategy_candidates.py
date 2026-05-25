@@ -2516,4 +2516,137 @@ class V19KStrategy(V19HStrategy):
 
     @property
     def name(self) -> str:
-        return "v1_9K"
+        return "v1_9"
+
+
+class V19LStrategy(V19KStrategy):
+    """V1.9L: V1.9K + BULL cooldown 0 (buy every bar, no wait).
+
+    V1.9K's BULL cooldown=1 means buying every bar — full position
+    in 2 bars. V1.9L tries cooldown=0. Result: identical to V1.9K.
+    max_buy=0.50 is the binding constraint, not cooldown.
+
+    Changes from V1.9K:
+    1. BULL base_cooldown 1 -> 0.
+    """
+
+    VERSION_LABEL = "v1_9L"
+
+    STATE_CONFIG = {
+        "BULL": {"max_buy": 0.50, "max_sell": 0.25, "base_cooldown": 0},
+        "MIXED": {"max_buy": 0.30, "max_sell": 0.25, "base_cooldown": 4},
+        "BEAR": {"max_buy": 0.05, "max_sell": 0.25, "base_cooldown": 48},
+    }
+
+    @property
+    def name(self) -> str:
+        return "v1_9L"
+
+
+class V19MStrategy(V19KStrategy):
+    """V1.9M: V1.9K + MIXED confirm bars 5->3 (faster state transition).
+
+    Result: score 0.6458, BULL win 0.3299. Reducing MIXED confirm HURT
+    performance — the strategy exits BULL too early on 3-bar flickers.
+    5-bar confirm is a feature, not a bug.
+
+    Changes from V1.9K:
+    1. CONFIRM_BARS MIXED 5 -> 3.
+    """
+
+    VERSION_LABEL = "v1_9M"
+    CONFIRM_BARS = {"BULL": 1, "MIXED": 3, "BEAR": 2}
+
+    @property
+    def name(self) -> str:
+        return "v1_9M"
+
+
+class V19NStrategy(V19KStrategy):
+    """V1.9N: V1.9K + trend-quality adaptive sell threshold.
+
+    Dynamic threshold based on EMA alignment. Result: identical to V1.9K
+    (0.6533, BULL win 0.3505). Threshold only affects risk-reduce
+    and trend-break sells which don't fire in BULL — no impact.
+
+    Changes from V1.9K:
+    1. _get_bull_sell_threshold returns dynamic value based on EMAs.
+    """
+
+    VERSION_LABEL = "v1_9N"
+
+    @property
+    def name(self) -> str:
+        return "v1_9N"
+
+    def _get_bull_sell_threshold(self) -> float:
+        latest = getattr(self, "_latest_bar", None)
+        if latest is None:
+            return 0.10
+        ema24 = latest.get("ema24")
+        ema72 = latest.get("ema72")
+        ema168 = latest.get("ema168")
+        if any(pd.isna(x) for x in (ema24, ema72, ema168)):
+            return 0.10
+        if ema24 > ema72 > ema168:
+            return 0.15
+        if ema24 > ema72:
+            return 0.10
+        return 0.06
+
+
+class V19OStrategy(V19KStrategy):
+    """V1.9O: V1.9K + post-pullback buy boost.
+
+    After a MIXED->BULL state transition (the strategy survived a pullback
+    and BULL is re-confirmed), temporarily boost buying for the next bars.
+    This accelerates re-entry after selling during the pullback.
+
+    Boost parameters:
+    - COOLDOWN: 0 for POST_PULLBACK_BOOST_BARS after transition
+    - MAX_BUY: 0.75 for POST_PULLBACK_BOOST_BARS after transition
+    - Boost is consumed on each buy call, limited by POST_PULLBACK_BOOST_BARS
+
+    Changes from V1.9K:
+    1. Track MIXED->BULL transitions, activate boost.
+    2. _adjust_buy_cooldown: return 0 during boost.
+    3. _adjust_bull_buy_max_buy: return 0.75 during boost.
+    """
+
+    VERSION_LABEL = "v1_9O"
+    POST_PULLBACK_BOOST_BARS = 3
+    POST_PULLBACK_MAX_BUY = 0.75
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._post_pullback_boost = 0
+
+    @property
+    def name(self) -> str:
+        return "v1_9O"
+
+    def compute_actions(
+        self,
+        candles_by_symbol: dict[str, pd.DataFrame],
+        portfolio: PortfolioState,
+        current_prices: dict[str, float],
+    ) -> list[Action]:
+        prev_state = getattr(self, "_current_state", None)
+        actions = super().compute_actions(candles_by_symbol, portfolio, current_prices)
+        curr_state = getattr(self, "_current_state", None)
+        if prev_state == "MIXED" and curr_state == "BULL":
+            self._post_pullback_boost = self.POST_PULLBACK_BOOST_BARS
+        return actions
+
+    def _adjust_buy_cooldown(self, buy_setup: str, effective_cooldown: int) -> tuple[int, str]:
+        if self._post_pullback_boost > 0:
+            return 0, "post-pullback-boost"
+        return super()._adjust_buy_cooldown(buy_setup, effective_cooldown)
+
+    def _adjust_bull_buy_max_buy(
+        self, max_buy: float, confirmed_state: str, current_pct: float,
+    ) -> float:
+        if self._post_pullback_boost > 0:
+            self._post_pullback_boost -= 1
+            return max(max_buy, self.POST_PULLBACK_MAX_BUY)
+        return super()._adjust_bull_buy_max_buy(max_buy, confirmed_state, current_pct)
