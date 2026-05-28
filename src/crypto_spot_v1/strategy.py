@@ -265,6 +265,7 @@ class V1SpotStrategy(PortfolioStrategyBase):
             raw_state=raw_state,
             buy_setup=buy_setup,
             max_buy=max_buy,
+            confirmed_state=confirmed_state,
         )
 
         buy_pct = min(gap, max_buy)
@@ -388,6 +389,7 @@ class V1SpotStrategy(PortfolioStrategyBase):
         raw_state: str,
         buy_setup: str,
         max_buy: float,
+        confirmed_state: str | None = None,
     ) -> tuple[float, str]:
         guard = ""
         if self._is_post_override_target_gap(buy_setup):

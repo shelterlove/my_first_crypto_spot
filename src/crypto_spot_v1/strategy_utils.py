@@ -26,6 +26,13 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ema168"] = df["close"].ewm(span=168, adjust=False).mean()
     df["ema168_slope"] = df["ema168"].pct_change(20)
 
+    # ── Momentum (for early bull detection — PRE_BULL) ──
+    df["roc_5"] = df["close"].pct_change(5)
+    df["roc_10"] = df["close"].pct_change(10)
+    df["roc_20"] = df["close"].pct_change(20)
+    df["ema24_slope"] = df["ema24"].pct_change(5)
+    df["ema72_slope"] = df["ema72"].pct_change(5)
+
     # ── ATR ──
     df = add_atr(df, period=14)
     df["atr_pct"] = df["atr14"] / df["close"]
@@ -48,6 +55,17 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # ── 120d high drawdown ──
     df["high_120"] = high_120
     df["dd_from_120d_high"] = 1 - df["close"] / df["high_120"]
+
+    # ── Rolling 365d price position (for V3 cost-awareness) ──
+    df["high_365"] = df["high"].rolling(365).max()
+    df["low_365"] = df["low"].rolling(365).min()
+    denom_365 = (df["high_365"] - df["low_365"]).replace(0, float("nan"))
+    df["rolling_365d_pos"] = (df["close"] - df["low_365"]) / denom_365
+    df["rolling_365d_pos"] = df["rolling_365d_pos"].fillna(0.5)
+
+    # ── 180d high drawdown ──
+    df["high_180"] = df["high"].rolling(180).max()
+    df["dd_from_180d_high"] = 1 - df["close"] / df["high_180"]
 
     # ── Volume (if quote_volume available) ──
     if "quote_volume" in df.columns:
