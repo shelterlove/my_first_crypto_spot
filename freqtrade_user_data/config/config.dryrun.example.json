@@ -2,6 +2,7 @@
   "trading_mode": "spot",
   "dry_run": true,
   "dry_run_wallet": 1000,
+  "strategy": "CryptoSpotV26",
   "stake_currency": "USDT",
   "stake_amount": "unlimited",
   "max_open_trades": 3,
