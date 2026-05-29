@@ -5,7 +5,7 @@
 - Strategy: `v2_6`
 - Class: `V26Strategy`
 - Evaluation run: `results/v1_eval_upgrade/20260529_123908_v2_6`
-- Status: ready for paper trading, not ready for live capital
+- Status: best current candidate for dry-run infrastructure testing, but strict promotion criteria are not met
 
 ## Why This Version
 
@@ -16,6 +16,14 @@ trend is intact, without changing BEAR targets, buy sizing, or trend-break exits
 
 ## Gate Results
 
+The evaluation review is authoritative:
+
+- `model_review.json`: `pass_promotion_criteria=false`
+- `model_review.md`: `Result: do_not_promote`
+
+`v2_6` is still the best retained candidate, but it should not be treated as a
+fully promoted strategy.
+
 | Gate | Requirement | v2_6 |
 |---|---:|---:|
 | Score | `>= v2_4` | `0.6500` |
@@ -23,6 +31,7 @@ trend is intact, without changing BEAR targets, buy sizing, or trend-break exits
 | Win rate vs BH | `>= 54%` | `54.55%` |
 | BTC median excess | `>= 0` | `2.09%` |
 | BULL win rate | `>= 35%` | `35.05%` |
+| BULL median excess improvement | `>= v1_less_churn + 10pp` | `-17.89%` (fails; threshold about `-14.90%`) |
 | BEAR win rate | `>= 90%` | `94.44%` |
 | Mean max drawdown | not worse than `v2_4` by more than 1% | `-37.68%` |
 | Turnover | not more than 10% above `v2_4` | `4.51` |
@@ -41,11 +50,22 @@ Cost stress remained positive:
 
 ## Known Weakness
 
-- BULL median excess remains negative at `-17.89%`.
+- BULL median excess remains negative at `-17.89%`, below the strict promotion threshold.
 - The strategy is still a rule overlay on the target-table framework, not a fully
   separated core/tactical portfolio engine.
 - Paper trading should validate signal behavior, execution assumptions, and
   operational logging. It should not be treated as proof of live robustness.
+
+## Latest Failed Iterations
+
+Three narrow `v2_7` experiments were tested and removed from code:
+
+- constructive MIXED sell target `BULL[3] -> BULL[2]`: score `0.6473`, BULL median worsened to `-18.72%`.
+- relaxed fast-BULL ROC threshold `roc_10 > -0.02`: score `0.6473`, BULL win fell to `34.02%`.
+- BTC BEAR target-gap buy multiplier `0.25 -> 0.50`: score `0.6368`, median excess fell to `3.94%`.
+
+Current evidence says simple exposure increases are not enough; they tend to
+reduce BULL win rate or weaken BEAR protection.
 
 ## Paper Trading Rules
 
