@@ -1690,3 +1690,114 @@ class V27Strategy(V26Strategy):
         if pd.isna(ema24) or pd.isna(roc_5):
             return False
         return bool(price > ema24 and roc_5 > 0)
+
+
+class V28Strategy(V27Strategy):
+    """V2.8: broader alt constructive-MIXED recovery override."""
+
+    VERSION_LABEL = "v2_8"
+
+    @property
+    def name(self) -> str:
+        return "v2_8"
+
+    def _is_recovery_override_setup(
+        self,
+        df: pd.DataFrame,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        risk_score: int,
+    ) -> bool:
+        if super()._is_recovery_override_setup(
+            df=df,
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            risk_score=risk_score,
+        ):
+            return True
+
+        if self._is_btc_symbol() or trend_risk > 2 or risk_score < 2:
+            return False
+        if str(latest.get("btc_regime", "")) == "BEAR":
+            return False
+        if not self._is_constructive_mixed(latest, price, raw_state, confirmed_state):
+            return False
+
+        donchian_pos = latest.get("donchian_pos")
+        if pd.isna(donchian_pos):
+            return False
+        return bool(donchian_pos >= 0.30)
+
+    def _is_btc_symbol(self) -> bool:
+        return "BTC/USDT" in getattr(self, "TARGET_ALLOC", {})
+
+
+class V29Strategy(V28Strategy):
+    """V2.9: wider alt recovery momentum tolerance."""
+
+    VERSION_LABEL = "v2_9"
+    ALT_RECOVERY_DONCHIAN_MIN = 0.15
+    ALT_RECOVERY_MIN_ROC20 = -0.15
+
+    @property
+    def name(self) -> str:
+        return "v2_9"
+
+    def _is_recovery_override_setup(
+        self,
+        df: pd.DataFrame,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        risk_score: int,
+    ) -> bool:
+        if V27Strategy._is_recovery_override_setup(
+            self,
+            df=df,
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            risk_score=risk_score,
+        ):
+            return True
+
+        if self._is_btc_symbol() or trend_risk > 2 or risk_score < 2:
+            return False
+        if str(latest.get("btc_regime", "")) == "BEAR":
+            return False
+        if not self._is_alt_recovery_structure(latest, price, raw_state, confirmed_state):
+            return False
+
+        donchian_pos = latest.get("donchian_pos")
+        if pd.isna(donchian_pos):
+            return False
+        return bool(donchian_pos >= self.ALT_RECOVERY_DONCHIAN_MIN)
+
+    def _is_alt_recovery_structure(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+    ) -> bool:
+        if raw_state != "MIXED" or confirmed_state != "MIXED" or price <= 0:
+            return False
+        ema72 = latest.get("ema72")
+        ema168 = latest.get("ema168")
+        ema168_slope = latest.get("ema168_slope")
+        roc_20 = latest.get("roc_20")
+        if pd.isna(ema72) or pd.isna(ema168) or pd.isna(ema168_slope):
+            return False
+        if not (price > ema168 and ema72 > ema168 and ema168_slope > 0):
+            return False
+        return bool(pd.isna(roc_20) or roc_20 > self.ALT_RECOVERY_MIN_ROC20)

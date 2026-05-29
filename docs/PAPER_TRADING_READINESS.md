@@ -69,16 +69,18 @@ reduce BULL win rate or weaken BEAR protection.
 
 ## Current Research Candidate
 
-`v2_7` adds a narrow constructive-MIXED recovery override:
+`v2_9` is the current best research candidate. It builds on the narrow
+constructive-MIXED recovery override and broadens it for non-BTC symbols:
 
 - requires constructive EMA168 structure,
 - requires BTC regime not `BEAR`,
-- requires price above EMA24 and positive 5-day ROC,
+- does not apply to BTC,
+- tolerates weaker altcoin 20-day momentum during recovery,
 - does not change sell rules or BTC-BEAR protection.
 
-Run: `results/v1_eval_upgrade/20260529_161147_v2_7`
+Run: `results/v1_eval_upgrade/20260529_174556_v2_9`
 
-Result: score `0.6501`, BULL median excess `-17.72%`, BULL win rate `35.05%`,
+Result: score `0.6504`, BULL median excess `-16.34%`, BULL win rate `35.05%`,
 `pass_promotion_criteria=false`. It is a small improvement over `v2_6`, but
 still below the strict BULL median threshold.
 
