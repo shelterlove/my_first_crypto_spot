@@ -1801,3 +1801,14 @@ class V29Strategy(V28Strategy):
         if not (price > ema168 and ema72 > ema168 and ema168_slope > 0):
             return False
         return bool(pd.isna(roc_20) or roc_20 > self.ALT_RECOVERY_MIN_ROC20)
+
+
+class V210Strategy(V29Strategy):
+    """V2.10: stronger alt recovery risk-score relief."""
+
+    VERSION_LABEL = "v2_10"
+    RECOVERY_RISK_SCORE_REDUCTION = 2
+
+    @property
+    def name(self) -> str:
+        return "v2_10"
