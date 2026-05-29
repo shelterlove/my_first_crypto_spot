@@ -17,6 +17,7 @@ from .backtest_engine import (
     calculate_max_drawdown,
     calculate_sharpe,
 )
+from .decision import parse_action_reason
 
 
 def align_timestamps(candle_dfs: dict[str, pd.DataFrame]) -> list[pd.Timestamp]:
@@ -154,6 +155,7 @@ def run_rebalance_backtest(
                 "notional": notional,
                 "fee": fee,
                 "reason": action.reason,
+                **_decision_fields(action.reason),
             })
 
         snapshot = {
@@ -183,6 +185,20 @@ def run_rebalance_backtest(
     result.attrs["action_log"] = pd.DataFrame(action_records)
     result.attrs["execution_mode"] = execution_mode
     return result
+
+
+def _decision_fields(reason: str) -> dict:
+    parsed = parse_action_reason(reason)
+    return {
+        "setup": parsed.get("setup", ""),
+        "risk_score": parsed.get("risk_score"),
+        "trend_risk": parsed.get("trend_risk"),
+        "drawdown_risk": parsed.get("drawdown_risk"),
+        "raw_state": parsed.get("raw_state", ""),
+        "confirmed_state": parsed.get("confirmed_state", ""),
+        "target_pct": parsed.get("target_pct"),
+        "guards": parsed.get("guards", ""),
+    }
 
 
 def calculate_portfolio_performance(

@@ -29,6 +29,7 @@ from .diagnostics import (
     build_state_transition_report_from_diagnostics,
     write_diagnostics_outputs,
 )
+from .decision import build_strategy_manifest
 from .html_report import (
     build_strategy_evaluation_summary as build_html_strategy_evaluation_summary,
     generate_evaluation_html as generate_html_report,
@@ -136,6 +137,10 @@ def save_evaluation_run(
     )
     _write_json(run_dir / "experiment_metadata.json", metadata)
     _write_json(run_dir / "config_snapshot.json", config_snapshot)
+    _write_json(
+        run_dir / "strategy_manifest.json",
+        _strategy_manifest_for_run(candidate_name, config_snapshot),
+    )
 
     benchmark_df = build_benchmark_metrics(
         raw_df=raw_df,
@@ -445,6 +450,7 @@ def build_results_index_markdown() -> str:
         "## Primary Review",
         "- `model_review.md`: concise decision, headline metrics, regime/symbol tables.",
         "- `model_review.json`: machine-readable version of the same review.",
+        "- `strategy_manifest.json`: frozen strategy class, target table, config, and git commit.",
         "- `summary_metrics.csv`: top-level metrics for Buy & Hold and candidate.",
         "",
         "## Strategy Comparison",
@@ -685,6 +691,19 @@ def _effective_config(
     return snapshot
 
 
+def _strategy_manifest_for_run(candidate_name: str, config: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from .benchmark import build_strategy
+
+        capital = config.get("capital", {}).get("initial", 100.0)
+        reserve = config.get("capital", {}).get("reserve", 0.0)
+        fee = config.get("cost", {}).get("fee_rate", 0.0)
+        strategy = build_strategy(candidate_name, capital, reserve, fee)
+        return build_strategy_manifest(strategy, config)
+    except Exception as exc:  # pragma: no cover - reporting fallback
+        return {"strategy_name": candidate_name, "error": str(exc)}
+
+
 def _raw_results_df(results: dict[str, StrategySummary]) -> pd.DataFrame:
     rows = []
     for summary in results.values():
@@ -785,7 +804,13 @@ def build_benchmark_metrics(
     candidate = raw_df[raw_df["strategy_name"] == candidate_name].copy()
     rows = []
     for _, row in candidate.iterrows():
-        exposure_matched = row["avg_exposure"] * row["buy_hold_return"]
+        exposure_matched = _path_exposure_matched_return(
+            equity_df=equity_df,
+            strategy_name=candidate_name,
+            symbol=row["symbol"],
+            window_label=row["window_label"],
+            fallback=row["avg_exposure"] * row["buy_hold_return"],
+        )
         rows.append({
             "strategy": candidate_name,
             "symbol": row["symbol"],
@@ -818,6 +843,34 @@ def build_benchmark_metrics(
             "strategy_return", "excess_return", "win", "avg_exposure",
         ])
     return pd.DataFrame(rows)
+
+
+def _path_exposure_matched_return(
+    *,
+    equity_df: pd.DataFrame,
+    strategy_name: str,
+    symbol: str,
+    window_label: str,
+    fallback: float,
+) -> float:
+    if equity_df.empty:
+        return float(fallback)
+    price_col = f"{symbol}_price"
+    value_col = f"{symbol}_value"
+    if price_col not in equity_df.columns or value_col not in equity_df.columns:
+        return float(fallback)
+    group = equity_df[
+        (equity_df.get("strategy_name") == strategy_name)
+        & (equity_df.get("symbol") == symbol)
+        & (equity_df.get("window_label") == window_label)
+    ].copy()
+    if group.empty or "total_value" not in group.columns:
+        return float(fallback)
+    group = group.sort_values("timestamp")
+    price_returns = group[price_col].pct_change().fillna(0.0)
+    exposure = (group[value_col] / group["total_value"].replace(0, np.nan)).fillna(0.0)
+    matched_returns = exposure.shift(1).fillna(exposure.iloc[0]) * price_returns
+    return float((1 + matched_returns).prod() - 1)
 
 
 def _previous_best_rows(config: dict[str, Any], candidate_name: str) -> list[dict[str, Any]]:
@@ -1394,7 +1447,18 @@ def build_final_score_report(
     candidate = raw_df[raw_df["strategy_name"] == candidate_name].copy()
     if candidate.empty:
         return pd.DataFrame(columns=_score_columns())
-    embh = candidate["avg_exposure"] * candidate["buy_hold_return"]
+    embh_rows = benchmark_df[benchmark_df["benchmark"] == "exposure_matched_buy_hold"]
+    embh_lookup = {
+        (row["symbol"], row["window_id"]): row["benchmark_return"]
+        for _, row in embh_rows.iterrows()
+    }
+    embh = candidate.apply(
+        lambda row: embh_lookup.get(
+            (row["symbol"], row["window_label"]),
+            row["avg_exposure"] * row["buy_hold_return"],
+        ),
+        axis=1,
+    )
     hard = config.get("evaluation", {}).get("hard_constraints", {})
     fail_reasons = []
     if candidate["avg_exposure"].mean() < hard.get("min_avg_exposure", 0.55):

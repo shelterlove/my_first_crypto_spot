@@ -20,6 +20,7 @@ results/v1_eval_upgrade/<timestamp>_v2_4/
 
 - `model_review.md`             — 模型评审入口，先看这个
 - `RESULTS_INDEX.md`            — 结果文件阅读顺序
+- `strategy_manifest.json`      — 策略版本、参数和 git commit 快照
 - `summary_metrics.csv`
 - `benchmark_metrics.csv`
 - `regime_performance_report.csv`
@@ -44,6 +45,7 @@ configs/
 scripts/
   run_v1_4_remaining.py         # 当前评估入口
   run_v1_backtest.py            # 通用候选策略回测入口
+  generate_daily_signal.py      # 模拟盘 signal-only 日信号入口
 
 src/crypto_spot_v1/
   strategy.py                   # V1SpotStrategy 基类

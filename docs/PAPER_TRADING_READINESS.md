@@ -49,6 +49,8 @@ Cost stress remained positive:
 ## Paper Trading Rules
 
 - Freeze strategy code and parameters at `v2_6`.
+- Generate and archive `strategy_manifest.json` for every evaluation or signal run.
+- Use `scripts/generate_daily_signal.py --strategy v2_6` for signal-only review.
 - Run paper trading for at least 3 months.
 - Do not modify rules during the paper-trading window.
 - Review every generated action reason before enabling any live execution.
