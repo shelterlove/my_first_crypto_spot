@@ -4,7 +4,7 @@
 
 - Strategy: `v2_6`
 - Class: `V26Strategy`
-- Evaluation run: `results/v1_eval_upgrade/20260529_103802_v2_6`
+- Evaluation run: `results/v1_eval_upgrade/20260529_123908_v2_6`
 - Status: ready for paper trading, not ready for live capital
 
 ## Why This Version
@@ -27,6 +27,7 @@ trend is intact, without changing BEAR targets, buy sizing, or trend-break exits
 | Mean max drawdown | not worse than `v2_4` by more than 1% | `-37.68%` |
 | Turnover | not more than 10% above `v2_4` | `4.51` |
 | Simple EMA168 median excess | `>= 0` | `5.54%` |
+| Path exposure-matched median excess | `>= 0` | `1.15%` |
 | Diagnostic quality | all pass | pass |
 
 Cost stress remained positive:
