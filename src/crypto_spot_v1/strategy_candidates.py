@@ -1640,3 +1640,53 @@ class V26Strategy(V24Strategy):
         if not (price > ema168 and ema72 > ema168 and ema168_slope > 0):
             return False
         return bool(pd.isna(roc_20) or roc_20 > -0.08)
+
+
+class V27Strategy(V26Strategy):
+    """V2.7: constructive-MIXED re-entry override.
+
+    Diagnostics show the main BULL drag is slow re-entry after sells, not a
+    simple lack of gross exposure. This variant only accelerates buy recovery
+    when MIXED still has constructive EMA168 structure and BTC regime is not
+    BEAR, leaving BTC-BEAR protection and sell rules unchanged.
+    """
+
+    VERSION_LABEL = "v2_7"
+
+    @property
+    def name(self) -> str:
+        return "v2_7"
+
+    def _is_recovery_override_setup(
+        self,
+        df: pd.DataFrame,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        risk_score: int,
+    ) -> bool:
+        if super()._is_recovery_override_setup(
+            df=df,
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            risk_score=risk_score,
+        ):
+            return True
+
+        if trend_risk > 2 or risk_score < 2:
+            return False
+        if str(latest.get("btc_regime", "")) == "BEAR":
+            return False
+        if not self._is_constructive_mixed(latest, price, raw_state, confirmed_state):
+            return False
+
+        ema24 = latest.get("ema24")
+        roc_5 = latest.get("roc_5")
+        if pd.isna(ema24) or pd.isna(roc_5):
+            return False
+        return bool(price > ema24 and roc_5 > 0)

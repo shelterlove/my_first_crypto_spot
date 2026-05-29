@@ -58,7 +58,7 @@ Cost stress remained positive:
 
 ## Latest Failed Iterations
 
-Three narrow `v2_7` experiments were tested and removed from code:
+Three earlier transient experiments were tested and removed from code:
 
 - constructive MIXED sell target `BULL[3] -> BULL[2]`: score `0.6473`, BULL median worsened to `-18.72%`.
 - relaxed fast-BULL ROC threshold `roc_10 > -0.02`: score `0.6473`, BULL win fell to `34.02%`.
@@ -66,6 +66,21 @@ Three narrow `v2_7` experiments were tested and removed from code:
 
 Current evidence says simple exposure increases are not enough; they tend to
 reduce BULL win rate or weaken BEAR protection.
+
+## Current Research Candidate
+
+`v2_7` adds a narrow constructive-MIXED recovery override:
+
+- requires constructive EMA168 structure,
+- requires BTC regime not `BEAR`,
+- requires price above EMA24 and positive 5-day ROC,
+- does not change sell rules or BTC-BEAR protection.
+
+Run: `results/v1_eval_upgrade/20260529_161147_v2_7`
+
+Result: score `0.6501`, BULL median excess `-17.72%`, BULL win rate `35.05%`,
+`pass_promotion_criteria=false`. It is a small improvement over `v2_6`, but
+still below the strict BULL median threshold.
 
 ## Paper Trading Rules
 
