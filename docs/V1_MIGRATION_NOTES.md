@@ -8,12 +8,13 @@ methodology, but the runtime strategy code is now flattened into a clean
 
 - Expose the accepted behavior as `v1`.
 - Flatten the accepted strategy into `src/crypto_spot_v1/strategy.py`.
-- Copy the repaired event-driven backtest, rolling-window, metrics, report, and
-  result-saving runtime into `src/crypto_spot_v1`.
+- Keep the repaired event-driven backtest, rolling-window, metrics, evaluation,
+  diagnostics, and HTML report runtime inside `src/crypto_spot_v1`.
 - Use the repaired standard methodology: `next_open`, warmup excluded,
   fee-adjusted Buy & Hold.
 - Write new V1 results under `results`.
-- Do not register historical strategy versions in the V1 runner.
+- Do not register historical legacy strategy versions in the V1 runner; only
+  local V1 baseline/candidate strategies are allowed.
 - Do not optimize strategy rules during cleanup.
 - Keep database credentials sourced from this project's `.env` or process
   environment variables.

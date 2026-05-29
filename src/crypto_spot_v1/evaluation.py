@@ -234,6 +234,26 @@ def save_evaluation_run(
         config=config_snapshot,
     )
     score_df.to_csv(run_dir / "final_score_report.csv", index=False)
+    model_review = build_model_review(
+        metadata=metadata,
+        summary_df=summary_df,
+        benchmark_df=benchmark_df,
+        raw_df=raw_df,
+        score_df=score_df,
+        full_outputs=full_outputs,
+        optimization_comparison_df=optimization_comparison_df,
+        verdict=verdict,
+        candidate_name=candidate_name,
+    )
+    _write_json(run_dir / "model_review.json", model_review)
+    (run_dir / "model_review.md").write_text(
+        build_model_review_markdown(model_review),
+        encoding="utf-8",
+    )
+    (run_dir / "RESULTS_INDEX.md").write_text(
+        build_results_index_markdown(),
+        encoding="utf-8",
+    )
 
     html = generate_html_report(
         metadata=metadata,
@@ -279,6 +299,351 @@ def save_evaluation_run(
     }
     _write_json(run_dir / "diagnostics.json", diagnostics)
     return run_dir
+
+
+def build_model_review(
+    *,
+    metadata: dict[str, Any],
+    summary_df: pd.DataFrame,
+    benchmark_df: pd.DataFrame,
+    raw_df: pd.DataFrame,
+    score_df: pd.DataFrame,
+    full_outputs: dict[str, pd.DataFrame],
+    optimization_comparison_df: pd.DataFrame,
+    verdict: dict,
+    candidate_name: str,
+) -> dict[str, Any]:
+    candidate_summary = _single_row(summary_df, "strategy", candidate_name)
+    buy_hold_summary = _single_row(summary_df, "strategy", "buy_hold")
+    candidate_raw = raw_df[raw_df.get("strategy_name") == candidate_name].copy()
+    regime_raw = _group_raw_metrics(candidate_raw, "market_regime")
+    symbol_raw = _group_raw_metrics(candidate_raw, "symbol")
+    benchmark_summary = _group_benchmark_metrics(benchmark_df)
+    comparison_row = _single_row(optimization_comparison_df, "candidate", candidate_name)
+
+    score = _float_or_none(candidate_summary.get("score"))
+    score_notes = _score_notes(
+        candidate_summary=candidate_summary,
+        comparison_row=comparison_row,
+        benchmark_summary=benchmark_summary,
+        regime_raw=regime_raw,
+    )
+    return {
+        "metadata": {
+            "run_id": metadata.get("run_id"),
+            "candidate": candidate_name,
+            "timestamp": metadata.get("timestamp"),
+            "mode": metadata.get("mode"),
+            "symbols": metadata.get("symbols"),
+            "timeframe": metadata.get("timeframe"),
+            "data_start": metadata.get("data_start"),
+            "data_end": metadata.get("data_end"),
+        },
+        "decision": {
+            "score": score,
+            "recommendation": verdict.get("recommendation"),
+            "pass_promotion_criteria": _bool_or_none(comparison_row.get("pass_promotion_criteria")),
+            "review_result": _review_result(score_notes),
+            "main_notes": score_notes,
+        },
+        "headline_metrics": {
+            "candidate": _headline_metrics(candidate_summary),
+            "buy_hold": _headline_metrics(buy_hold_summary),
+            "drawdown_reduction_vs_buy_hold": _float_or_none(candidate_summary.get("drawdown_reduction")),
+            "retention_ratio_vs_buy_hold": _float_or_none(candidate_summary.get("retention_ratio")),
+        },
+        "benchmarks": benchmark_summary,
+        "by_regime": regime_raw,
+        "by_symbol": symbol_raw,
+        "optimization_comparison": _compact_comparison(comparison_row),
+        "score_components": _score_components(score_df),
+        "artifact_policy": {
+            "start_here": ["model_review.md", "model_review.json", "summary_metrics.csv"],
+            "deep_dive": [
+                "strategy_optimization_comparison.csv",
+                "regime_performance_report.csv",
+                "benchmark_metrics.csv",
+                "bull_underperformance_window_analysis.csv",
+            ],
+            "audit_only": [
+                "raw_backtest_results.csv",
+                "action_logs.csv.gz",
+                "equity_curves.csv.gz",
+                "diagnostics/",
+            ],
+        },
+    }
+
+
+def build_model_review_markdown(review: dict[str, Any]) -> str:
+    meta = review["metadata"]
+    decision = review["decision"]
+    candidate = review["headline_metrics"]["candidate"]
+    buy_hold = review["headline_metrics"]["buy_hold"]
+    lines = [
+        f"# Model Review: {meta.get('candidate')}",
+        "",
+        "## Decision",
+        f"- Result: **{decision.get('review_result')}**",
+        f"- Score: `{_fmt_number(decision.get('score'))}`",
+        f"- Recommendation: `{decision.get('recommendation')}`",
+        f"- Promotion criteria: `{decision.get('pass_promotion_criteria')}`",
+        "",
+        "## Headline",
+        "| Metric | Candidate | Buy & Hold |",
+        "|---|---:|---:|",
+        f"| Mean return | {_fmt_pct(candidate.get('mean_return'))} | {_fmt_pct(buy_hold.get('mean_return'))} |",
+        f"| Median return | {_fmt_pct(candidate.get('median_return'))} | {_fmt_pct(buy_hold.get('median_return'))} |",
+        f"| Median excess | {_fmt_pct(candidate.get('median_excess_return'))} | {_fmt_pct(buy_hold.get('median_excess_return'))} |",
+        f"| Win rate vs BH | {_fmt_pct(candidate.get('win_rate_vs_bh'))} | {_fmt_pct(buy_hold.get('win_rate_vs_bh'))} |",
+        f"| Mean max drawdown | {_fmt_pct(candidate.get('mean_max_drawdown'))} | {_fmt_pct(buy_hold.get('mean_max_drawdown'))} |",
+        f"| Avg exposure | {_fmt_pct(candidate.get('mean_exposure'))} | {_fmt_pct(buy_hold.get('mean_exposure'))} |",
+        f"| Trades/window | {_fmt_number(candidate.get('mean_trade_count'))} | {_fmt_number(buy_hold.get('mean_trade_count'))} |",
+        f"| Turnover | {_fmt_number(candidate.get('mean_turnover'))} | {_fmt_number(buy_hold.get('mean_turnover'))} |",
+        "",
+        "## Notes",
+    ]
+    for note in decision.get("main_notes", []):
+        lines.append(f"- {note}")
+    lines.extend(["", "## Benchmarks", "| Benchmark | Mean excess | Median excess | Win rate | Avg exposure |", "|---|---:|---:|---:|---:|"])
+    for name, row in review.get("benchmarks", {}).items():
+        lines.append(
+            f"| {name} | {_fmt_pct(row.get('mean_excess_return'))} | "
+            f"{_fmt_pct(row.get('median_excess_return'))} | {_fmt_pct(row.get('win_rate'))} | "
+            f"{_fmt_pct(row.get('avg_exposure'))} |"
+        )
+    lines.extend(["", "## Regime", "| Regime | Windows | Mean excess | Median excess | Win rate | Drawdown | Exposure |", "|---|---:|---:|---:|---:|---:|---:|"])
+    for name, row in review.get("by_regime", {}).items():
+        lines.append(
+            f"| {name} | {row.get('windows')} | {_fmt_pct(row.get('mean_excess_return'))} | "
+            f"{_fmt_pct(row.get('median_excess_return'))} | {_fmt_pct(row.get('win_rate_vs_bh'))} | "
+            f"{_fmt_pct(row.get('mean_max_drawdown'))} | {_fmt_pct(row.get('mean_exposure'))} |"
+        )
+    lines.extend(["", "## Symbol", "| Symbol | Windows | Mean excess | Median excess | Win rate | Drawdown | Exposure |", "|---|---:|---:|---:|---:|---:|---:|"])
+    for name, row in review.get("by_symbol", {}).items():
+        lines.append(
+            f"| {name} | {row.get('windows')} | {_fmt_pct(row.get('mean_excess_return'))} | "
+            f"{_fmt_pct(row.get('median_excess_return'))} | {_fmt_pct(row.get('win_rate_vs_bh'))} | "
+            f"{_fmt_pct(row.get('mean_max_drawdown'))} | {_fmt_pct(row.get('mean_exposure'))} |"
+        )
+    lines.extend([
+        "",
+        "## Read Order",
+        "1. `model_review.md` for the decision.",
+        "2. `strategy_optimization_comparison.csv` for promotion criteria.",
+        "3. `regime_performance_report.csv` and `benchmark_metrics.csv` for attribution.",
+        "4. Raw logs and diagnostics only when debugging a specific failure.",
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def build_results_index_markdown() -> str:
+    return "\n".join([
+        "# Results Index",
+        "",
+        "## Primary Review",
+        "- `model_review.md`: concise decision, headline metrics, regime/symbol tables.",
+        "- `model_review.json`: machine-readable version of the same review.",
+        "- `summary_metrics.csv`: top-level metrics for Buy & Hold and candidate.",
+        "",
+        "## Strategy Comparison",
+        "- `strategy_optimization_comparison.csv`: promotion criteria and baseline comparison.",
+        "- `strategy_optimization_summary.md`: short generated comparison summary.",
+        "- `benchmark_metrics.csv`: Buy & Hold, exposure-matched, simple EMA168, and previous-best benchmarks.",
+        "- `final_score_report.csv`: score inputs and hard-constraint checks.",
+        "",
+        "## Attribution",
+        "- `regime_performance_report.csv`: BULL/MIXED/BEAR behavior.",
+        "- `bull_underperformance_window_analysis.csv`: windows where BULL performance lags.",
+        "- `signal_attribution_buy.csv` / `signal_attribution_sell.csv`: action reasons.",
+        "- `risk_score_attribution_report.csv`: risk-score distribution.",
+        "",
+        "## Audit And Debug",
+        "- `raw_backtest_results.csv`: one row per symbol/window.",
+        "- `action_logs.csv.gz`: executed actions.",
+        "- `equity_curves.csv.gz`: equity curve records.",
+        "- `diagnostics/`: per-bar diagnostics and quality report.",
+        "- `timestamp_audit_report.csv` / `accounting_audit_report.csv`: execution and accounting checks.",
+        "",
+        "## Stress",
+        "- `cost_stress_report.csv`: fee/slippage stress.",
+        "- `warmup_sensitivity_report.csv`: warmup sensitivity.",
+        "- `parameter_sensitivity_report.csv`: configured perturbation placeholders.",
+        "",
+    ])
+
+
+def _headline_metrics(row: dict[str, Any]) -> dict[str, Any]:
+    keys = [
+        "score", "window_count", "mean_return", "median_return",
+        "mean_excess_return", "median_excess_return", "win_rate_vs_bh",
+        "mean_max_drawdown", "mean_sharpe", "mean_sortino", "mean_calmar",
+        "mean_trade_count", "mean_exposure", "mean_turnover",
+    ]
+    return {key: _float_or_none(row.get(key)) for key in keys}
+
+
+def _group_raw_metrics(df: pd.DataFrame, group_col: str) -> dict[str, dict[str, Any]]:
+    if df.empty or group_col not in df.columns:
+        return {}
+    rows: dict[str, dict[str, Any]] = {}
+    for name, group in df.groupby(group_col, dropna=False):
+        rows[str(name)] = {
+            "windows": int(len(group)),
+            "mean_return": _float_or_none(group["total_return"].mean()),
+            "median_return": _float_or_none(group["total_return"].median()),
+            "mean_excess_return": _float_or_none(group["excess_return"].mean()),
+            "median_excess_return": _float_or_none(group["excess_return"].median()),
+            "win_rate_vs_bh": _float_or_none(group["win_vs_bh"].mean()),
+            "mean_max_drawdown": _float_or_none(group["max_drawdown"].mean()),
+            "mean_trade_count": _float_or_none(group["trade_count"].mean()),
+            "mean_exposure": _float_or_none(group["avg_exposure"].mean()),
+            "mean_turnover": _float_or_none(group["turnover"].mean()),
+        }
+    return rows
+
+
+def _group_benchmark_metrics(df: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    if df.empty or "benchmark" not in df.columns:
+        return {}
+    rows: dict[str, dict[str, Any]] = {}
+    for name, group in df.groupby("benchmark", dropna=False):
+        rows[str(name)] = {
+            "windows": int(len(group)),
+            "benchmark_mean_return": _float_or_none(group["benchmark_return"].mean()),
+            "benchmark_median_return": _float_or_none(group["benchmark_return"].median()),
+            "strategy_mean_return": _float_or_none(group["strategy_return"].mean()),
+            "mean_excess_return": _float_or_none(group["excess_return"].mean()),
+            "median_excess_return": _float_or_none(group["excess_return"].median()),
+            "win_rate": _float_or_none(group["win"].mean()),
+            "avg_exposure": _float_or_none(group["avg_exposure"].mean()),
+        }
+    return rows
+
+
+def _score_components(score_df: pd.DataFrame) -> dict[str, Any]:
+    if score_df.empty:
+        return {}
+    return {
+        str(row.get("component", row.get("metric", i))): {
+            key: _float_or_none(value)
+            for key, value in row.items()
+            if key not in {"component", "metric"}
+        }
+        for i, row in score_df.iterrows()
+    }
+
+
+def _compact_comparison(row: dict[str, Any]) -> dict[str, Any]:
+    keys = [
+        "candidate", "score", "mean_return", "median_excess_vs_bh",
+        "mean_excess_vs_bh", "bull_median_excess_vs_bh", "bull_win_vs_bh",
+        "bear_median_excess_vs_bh", "max_drawdown", "avg_exposure",
+        "turnover", "trade_count", "pass_promotion_criteria",
+        "main_improvement", "main_regression", "recommendation",
+    ]
+    return {key: _json_scalar(row.get(key)) for key in keys if key in row}
+
+
+def _score_notes(
+    *,
+    candidate_summary: dict[str, Any],
+    comparison_row: dict[str, Any],
+    benchmark_summary: dict[str, dict[str, Any]],
+    regime_raw: dict[str, dict[str, Any]],
+) -> list[str]:
+    notes = []
+    median_excess = _float_or_none(candidate_summary.get("median_excess_return"))
+    max_dd = _float_or_none(candidate_summary.get("mean_max_drawdown"))
+    trade_count = _float_or_none(candidate_summary.get("mean_trade_count"))
+    if median_excess is not None:
+        notes.append(f"Median excess vs Buy & Hold is {_fmt_pct(median_excess)}.")
+    if max_dd is not None:
+        notes.append(f"Mean max drawdown is {_fmt_pct(max_dd)}.")
+    if trade_count is not None:
+        notes.append(f"Average trade count is {_fmt_number(trade_count)} per window.")
+    simple = benchmark_summary.get("simple_ema168_filter")
+    if simple:
+        notes.append(
+            "Against simple EMA168 filter: "
+            f"mean excess {_fmt_pct(simple.get('mean_excess_return'))}, "
+            f"win rate {_fmt_pct(simple.get('win_rate'))}."
+        )
+    bull = regime_raw.get("bull")
+    if bull:
+        notes.append(
+            "BULL regime: "
+            f"median excess {_fmt_pct(bull.get('median_excess_return'))}, "
+            f"win rate {_fmt_pct(bull.get('win_rate_vs_bh'))}."
+        )
+    regression = comparison_row.get("main_regression")
+    if isinstance(regression, str) and regression:
+        notes.append(regression)
+    return notes
+
+
+def _review_result(notes: list[str]) -> str:
+    text = " ".join(notes).lower()
+    if "promotion threshold not fully met" in text or "below 0.35" in text:
+        return "do_not_promote"
+    return "review_required"
+
+
+def _single_row(df: pd.DataFrame, column: str, value: Any) -> dict[str, Any]:
+    if df.empty or column not in df.columns:
+        return {}
+    match = df[df[column] == value]
+    if match.empty:
+        return {}
+    return match.iloc[0].to_dict()
+
+
+def _json_scalar(value: Any) -> Any:
+    if pd.isna(value) if not isinstance(value, (list, dict, tuple)) else False:
+        return None
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
+    return value
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        if value is None or pd.isna(value):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if value.lower() in {"true", "1", "yes"}:
+            return True
+        if value.lower() in {"false", "0", "no"}:
+            return False
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    return bool(value)
+
+
+def _fmt_number(value: Any) -> str:
+    number = _float_or_none(value)
+    return "n/a" if number is None else f"{number:.4f}"
+
+
+def _fmt_pct(value: Any) -> str:
+    number = _float_or_none(value)
+    return "n/a" if number is None else f"{number * 100:.2f}%"
 
 
 def _effective_config(
@@ -1126,11 +1491,21 @@ def build_strategy_optimization_comparison(
             f"bull_median_excess_vs_bh {base['bull_median_excess_vs_bh']:.4f}->{cand['bull_median_excess_vs_bh']:.4f}; "
             f"turnover {base['turnover']:.4f}->{cand['turnover']:.4f}"
         )
-        frame.loc[frame["candidate"] == candidate_name, "main_regression"] = (
-            f"bull_win_vs_bh remains below 0.35 ({base['bull_win_vs_bh']:.4f}->{cand['bull_win_vs_bh']:.4f}); "
-            f"max_drawdown changed {base['max_drawdown']:.4f}->{cand['max_drawdown']:.4f}; "
-            "promotion threshold not fully met"
+        regression_notes = []
+        if cand["bull_win_vs_bh"] < 0.35:
+            regression_notes.append(
+                f"bull_win_vs_bh remains below 0.35 ({base['bull_win_vs_bh']:.4f}->{cand['bull_win_vs_bh']:.4f})"
+            )
+        else:
+            regression_notes.append(
+                f"bull_win_vs_bh passed 0.35 ({base['bull_win_vs_bh']:.4f}->{cand['bull_win_vs_bh']:.4f})"
+            )
+        regression_notes.append(
+            f"max_drawdown changed {base['max_drawdown']:.4f}->{cand['max_drawdown']:.4f}"
         )
+        if not pass_criteria:
+            regression_notes.append("promotion threshold not fully met")
+        frame.loc[frame["candidate"] == candidate_name, "main_regression"] = "; ".join(regression_notes)
         frame.loc[frame["candidate"] == candidate_name, "recommendation"] = (
             "promote" if pass_criteria else "do_not_promote_yet"
         )

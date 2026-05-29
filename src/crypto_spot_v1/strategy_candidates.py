@@ -1250,39 +1250,24 @@ class V110Strategy(V19KStrategy):
         return super()._adjust_buy_execution(latest, price, raw_state, buy_setup, max_buy, confirmed_state=confirmed_state)
 
 
-class V3Strategy(V110Strategy):
-    """V2.4: Direction C — early BULL with escape hatch.
+class V24Strategy(V110Strategy):
+    """V2.4: fast BULL detection plus faster accumulation.
 
-    Direction C adds an _is_early_bull flag to distinguish fast-detection
-    BULL (pre-EMA-alignment) from standard BULL. Early BULL uses:
-    - BULL state config for buying (max_buy=0.50, cooldown=1)
-    - Narrow sell threshold (0.05) + unblocked target-reduce → can escape
-    - V19A default-block does NOT apply
-
-    Standard BULL (ema24>ema72>ema168 confirmed) keeps full V19A protection.
-
-    Other structural elements from V2.4 evolution:
-    - Direction A: fast BULL detection (ema72>ema168 & price>ema24 &
-      ema24_slope>0 & roc_10>0)
-    - Conditional MIXED cooldown with roc_5>0 momentum filter
-    - Graduated cost-aware buy reduction
-    - Recovery override 1.5x
+    Main changes over V1.10:
+    - Fast BULL detection when ema72 > ema168, price > ema24,
+      ema24_slope > 0, and roc_10 > 0.
+    - Conditional MIXED cooldown acceleration with roc_5 > 0.
+    - MIXED subtype buy sizing.
+    - Extended volatility scaling.
+    - Graduated cost-aware buy reduction.
     """
 
     VERSION_LABEL = "v2_4"
-
-    # ── BULL quality thresholds ──
-    BULL_EXHAUSTED_MAX_SELL = 0.15
 
     # ── MIXED subtype buy multipliers ──
     MIXED_ACCUMULATION_BUY_MULT = 1.0
     MIXED_NEUTRAL_BUY_MULT = 0.60
     MIXED_DISTRIBUTION_BUY_MULT = 0.50
-
-    # ── Profit protection ──
-    PROFIT_PROTECTION_MIN_PROFIT = 0.50
-    PROFIT_PROTECTION_MAX_GIVEBACK = 0.20
-    PROFIT_PROTECTION_MAX_SELL = 0.15
 
     # ── Extended vol scaling ──
     VOL_SCALE_HIGH = 0.75
@@ -1306,8 +1291,6 @@ class V3Strategy(V110Strategy):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._last_sell_price = 0.0
-        self._last_buy_price = 0.0
-        self._current_pos = None
 
     @property
     def name(self) -> str:
@@ -1359,7 +1342,6 @@ class V3Strategy(V110Strategy):
             if df is not None and not df.empty:
                 self._latest_bar = df.iloc[-1]
                 self._current_price = current_prices.get(symbol, 0.0)
-                self._current_pos = portfolio.positions.get(symbol, PositionState())
 
         actions = super().compute_actions(candles_by_symbol, portfolio, current_prices)
 
@@ -1367,32 +1349,8 @@ class V3Strategy(V110Strategy):
             action = actions[0]
             if action.side == "sell":
                 self._last_sell_price = action.price
-            elif action.side == "buy":
-                self._last_buy_price = action.price
 
         return actions
-
-    # ── Change 1: BULL sell block (V19A baseline) ──
-
-    def _is_bull_exhausted(self, trend_risk: int) -> bool:
-        """BULL is exhausted → allow capped target-reduce sells."""
-        latest = self._latest_bar
-        price = self._current_price
-        if latest is None or price <= 0:
-            return True
-
-        ema24 = latest.get("ema24")
-        ema72 = latest.get("ema72")
-        if pd.isna(ema24) or pd.isna(ema72):
-            return True
-
-        if not (ema24 > ema72):
-            return True
-        if price < ema72:
-            return True
-        if trend_risk >= 2 and price < ema24:
-            return True
-        return False
 
     def _compute_buy_cooldown(self, state: str, cfg: dict, risk_score: int) -> int:
         """Accelerate MIXED buying when price is above EMA24 with momentum.
@@ -1415,56 +1373,6 @@ class V3Strategy(V110Strategy):
                 ):
                     return max(1, base // 3)
         return base
-
-    # ── Profit protection (unused, kept for reference) ──
-
-    def _is_profit_protection_triggered(self, pos, price: float) -> bool:
-        """True when a position has large profits that are giving back."""
-        if pos is None or pos.quantity <= 1e-12 or pos.avg_cost <= 0 or self._peak_price <= 0:
-            return False
-        latest = self._latest_bar
-        if latest is not None:
-            dd_from_180d = latest.get("dd_from_180d_high")
-            if not pd.isna(dd_from_180d) and dd_from_180d > 0.15:
-                return False
-        profit_pct = price / pos.avg_cost - 1
-        if profit_pct < self.PROFIT_PROTECTION_MIN_PROFIT:
-            return False
-        giveback = 1 - price / self._peak_price
-        return giveback > self.PROFIT_PROTECTION_MAX_GIVEBACK
-
-    def _adjust_sell_execution(
-        self,
-        latest: pd.Series,
-        price: float,
-        raw_state: str,
-        confirmed_state: str,
-        trend_risk: int,
-        drawdown_risk: int,
-        risk_score: int,
-        sell_setup: str,
-        sell_threshold: float,
-        max_sell: float,
-    ) -> tuple[float, float, str]:
-        # Core overrides pass through unchanged
-        if sell_setup in ("core-override_trend-break", "core-override_profit-giveback"):
-            return super()._adjust_sell_execution(
-                latest, price, raw_state, confirmed_state, trend_risk,
-                drawdown_risk, risk_score, sell_setup, sell_threshold, max_sell,
-            )
-
-        guard = ""
-
-        # Super (V11 strong bull suppression → V1Spot healthy bull check)
-        threshold_result, adjusted_max_sell, base_guard = super()._adjust_sell_execution(
-            latest, price, raw_state, confirmed_state, trend_risk, drawdown_risk,
-            risk_score, sell_setup, sell_threshold, max_sell,
-        )
-        guard = base_guard
-
-        return threshold_result, adjusted_max_sell, guard
-
-    # ── Change 2: MIXED subtype classification ──
 
     @staticmethod
     def _classify_mixed_subtype(latest: pd.Series, price: float) -> str:
@@ -1512,23 +1420,23 @@ class V3Strategy(V110Strategy):
                 if buy_setup in ("pullback", "safe-recovery"):
                     max_buy *= self.VOL_SCALE_PULLBACK_RECOVERY_EXTREME
                     guard = self._join_guard(
-                        guard, f"v2_3_vol_ext_pb_x{self.VOL_SCALE_PULLBACK_RECOVERY_EXTREME:.2f}"
+                        guard, f"v2_4_vol_ext_pb_x{self.VOL_SCALE_PULLBACK_RECOVERY_EXTREME:.2f}"
                     )
                 elif buy_setup == "target-gap":
                     max_buy *= self.VOL_SCALE_EXTREME
                     guard = self._join_guard(
-                        guard, f"v2_3_vol_ext_tgap_x{self.VOL_SCALE_EXTREME:.2f}"
+                        guard, f"v2_4_vol_ext_tgap_x{self.VOL_SCALE_EXTREME:.2f}"
                     )
             elif atr_rank > 0.85:
                 if buy_setup == "target-gap":
                     max_buy *= self.VOL_SCALE_HIGH
                     guard = self._join_guard(
-                        guard, f"v2_3_vol_high_tgap_x{self.VOL_SCALE_HIGH:.2f}"
+                        guard, f"v2_4_vol_high_tgap_x{self.VOL_SCALE_HIGH:.2f}"
                     )
                 elif buy_setup in ("pullback", "safe-recovery"):
                     max_buy *= self.VOL_SCALE_PULLBACK_RECOVERY_HIGH
                     guard = self._join_guard(
-                        guard, f"v2_3_vol_high_pb_x{self.VOL_SCALE_PULLBACK_RECOVERY_HIGH:.2f}"
+                        guard, f"v2_4_vol_high_pb_x{self.VOL_SCALE_PULLBACK_RECOVERY_HIGH:.2f}"
                     )
 
         # 3 ── Graduated cost-aware buy reduction (skipped near 365d low) ──
@@ -1554,7 +1462,7 @@ class V3Strategy(V110Strategy):
         # 4 ── Compound floor: V3 reductions alone can't cut below 15% of original ──
         min_allowed = original_max_buy * self.BUY_REDUCTION_FLOOR
         if max_buy < min_allowed:
-            guard = self._join_guard(guard, f"v2_3_floor_x{max_buy/min_allowed:.2f}")
+            guard = self._join_guard(guard, f"v2_4_floor_x{max_buy/min_allowed:.2f}")
             max_buy = min_allowed
 
         # Call V1Spot base directly (skip V110 to avoid double vol scaling)
@@ -1567,4 +1475,168 @@ class V3Strategy(V110Strategy):
         return base_max_buy, guard
 
 
-V2SpotStrategy = V110Strategy
+class V25Strategy(V24Strategy):
+    """V2.5: long-term core-position variant of v2_4.
+
+    The strategy keeps v2_4's fast BULL entry, but makes selling slower in
+    constructive uptrends. Routine target-reduce sells are treated as small
+    trims, while larger risk reduction is reserved for structural trend breaks.
+    """
+
+    VERSION_LABEL = "v2_5"
+
+    TARGET_TABLE = V24Strategy.TARGET_TABLE
+
+    LONG_TRIM_MAX_SELL = 0.06
+    LONG_SELL_THRESHOLD = 0.10
+
+    @property
+    def name(self) -> str:
+        return "v2_5"
+
+    def _get_sell_target_state(
+        self, raw_state: str, confirmed_state: str,
+    ) -> tuple[str, int]:
+        if raw_state == "MIXED" and confirmed_state == "BULL":
+            return "BULL", 1
+        return raw_state, 0
+
+    def _is_constructive_mixed(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+    ) -> bool:
+        if raw_state != "MIXED" or confirmed_state != "MIXED" or price <= 0:
+            return False
+        ema24 = latest.get("ema24")
+        ema72 = latest.get("ema72")
+        ema168 = latest.get("ema168")
+        ema168_slope = latest.get("ema168_slope")
+        if (
+            pd.isna(ema24)
+            or pd.isna(ema72)
+            or pd.isna(ema168)
+            or pd.isna(ema168_slope)
+        ):
+            return False
+        if not (ema72 > ema168 and ema168_slope > 0 and price > ema168):
+            return False
+        roc_20 = latest.get("roc_20")
+        if not pd.isna(roc_20) and roc_20 < -0.08:
+            return False
+        return True
+
+    def _has_structural_break(self, latest: pd.Series, price: float) -> bool:
+        ema72 = latest.get("ema72")
+        ema168 = latest.get("ema168")
+        ema168_slope = latest.get("ema168_slope")
+        if pd.isna(ema72) or pd.isna(ema168) or pd.isna(ema168_slope):
+            return False
+        return bool(price < ema168 or ema72 < ema168 or ema168_slope <= 0)
+
+    def _adjust_sell_execution(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        drawdown_risk: int,
+        risk_score: int,
+        sell_setup: str,
+        sell_threshold: float,
+        max_sell: float,
+    ) -> tuple[float, float, str]:
+        threshold, adjusted_max_sell, guard = super()._adjust_sell_execution(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            drawdown_risk=drawdown_risk,
+            risk_score=risk_score,
+            sell_setup=sell_setup,
+            sell_threshold=sell_threshold,
+            max_sell=max_sell,
+        )
+
+        if self._is_constructive_mixed(latest, price, raw_state, confirmed_state):
+            if sell_setup == "target-reduce":
+                threshold = max(threshold, self.LONG_SELL_THRESHOLD)
+                adjusted_max_sell = min(adjusted_max_sell, self.LONG_TRIM_MAX_SELL)
+                guard = self._join_guard(guard, "v2_5_constructive_mixed_small_trim")
+
+        return threshold, adjusted_max_sell, guard
+
+    def _adjust_buy_execution(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        buy_setup: str,
+        max_buy: float,
+        confirmed_state: str | None = None,
+    ) -> tuple[float, str]:
+        skip_cost = confirmed_state == "BULL"
+        if not skip_cost:
+            return super()._adjust_buy_execution(
+                latest, price, raw_state, buy_setup, max_buy,
+                confirmed_state=confirmed_state,
+            )
+
+        last_sell_price = self._last_sell_price
+        self._last_sell_price = 0.0
+        try:
+            adjusted_max_buy, guard = super()._adjust_buy_execution(
+                latest, price, raw_state, buy_setup, max_buy,
+                confirmed_state=confirmed_state,
+            )
+        finally:
+            self._last_sell_price = last_sell_price
+
+        skip_cost_guard = "v2_5_skip_cost_in_uptrend"
+        return adjusted_max_buy, self._join_guard(guard, skip_cost_guard)
+
+
+class V26Strategy(V24Strategy):
+    """V2.6: conservative EMA168 core overlay for constructive MIXED.
+
+    V2.5's small-trim cap increased churn and hurt median results. V2.6 does
+    not cap sell size or change buys. It only raises the sell target modestly
+    when confirmed MIXED still has a healthy EMA168 structure.
+    """
+
+    VERSION_LABEL = "v2_6"
+
+    @property
+    def name(self) -> str:
+        return "v2_6"
+
+    def _get_sell_target_state(
+        self, raw_state: str, confirmed_state: str,
+    ) -> tuple[str, int]:
+        latest = self._latest_bar
+        if latest is not None and self._is_constructive_mixed(latest, self._current_price, raw_state, confirmed_state):
+            return "BULL", 3
+        return raw_state, 0
+
+    @staticmethod
+    def _is_constructive_mixed(
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+    ) -> bool:
+        if raw_state != "MIXED" or confirmed_state != "MIXED" or price <= 0:
+            return False
+        ema72 = latest.get("ema72")
+        ema168 = latest.get("ema168")
+        ema168_slope = latest.get("ema168_slope")
+        roc_20 = latest.get("roc_20")
+        if pd.isna(ema72) or pd.isna(ema168) or pd.isna(ema168_slope):
+            return False
+        if not (price > ema168 and ema72 > ema168 and ema168_slope > 0):
+            return False
+        return bool(pd.isna(roc_20) or roc_20 > -0.08)

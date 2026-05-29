@@ -40,6 +40,8 @@ LABELS = {
     "buy_hold_return": "Buy & Hold 收益",
     "excess_return": "超额收益",
     "mean_return": "平均收益",
+    "mean_candidate_return": "候选策略平均收益",
+    "mean_benchmark_return": "基准平均收益",
     "median_return": "中位数收益",
     "mean_excess_return": "平均超额",
     "median_excess_return": "中位数超额",
@@ -276,7 +278,7 @@ def _benchmark_summary(benchmark_df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
     return benchmark_df.groupby("benchmark", dropna=False).agg(
         windows=("window_id", "count"),
-        mean_strategy_return=("strategy_return", "mean"),
+        mean_candidate_return=("strategy_return", "mean"),
         mean_benchmark_return=("benchmark_return", "mean"),
         mean_excess_return=("excess_return", "mean"),
         median_excess_return=("excess_return", "median"),

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -13,7 +12,7 @@ from crypto_spot_v1.benchmark import V1BenchmarkRunner
 from crypto_spot_v1.metrics import compute_score
 from crypto_spot_v1.evaluation import save_evaluation_run
 
-CANDIDATES = ["v1_9O"]
+CANDIDATES = ["v2_6"]
 
 
 def main() -> None:
