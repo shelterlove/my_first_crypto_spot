@@ -1812,3 +1812,213 @@ class V210Strategy(V29Strategy):
     @property
     def name(self) -> str:
         return "v2_10"
+
+
+class V211AStrategy(V210Strategy):
+    """V2.11A: structural-MIXED long-core floor for target-reduce sells.
+
+    This candidate only limits routine target-reduce sells when long-term
+    structure remains constructive. It leaves risk-reduce, trend-break, buy
+    logic, cooldowns, and BTC-BEAR filters unchanged for clean attribution.
+    """
+
+    VERSION_LABEL = "v2_11A"
+    BTC_STRUCTURAL_CORE_FLOOR = 0.80
+    ALT_STRUCTURAL_CORE_FLOOR = 0.70
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._current_symbol = ""
+        self._structural_core_floor = 0.0
+
+    @property
+    def name(self) -> str:
+        return "v2_11A"
+
+    def compute_actions(self, candles_by_symbol, portfolio, current_prices):
+        self._current_symbol = strategy_utils.resolve_symbol(candles_by_symbol) or ""
+        return super().compute_actions(candles_by_symbol, portfolio, current_prices)
+
+    def _adjust_sell_execution(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        drawdown_risk: int,
+        risk_score: int,
+        sell_setup: str,
+        sell_threshold: float,
+        max_sell: float,
+    ) -> tuple[float, float, str]:
+        self._structural_core_floor = 0.0
+        threshold, adjusted_max_sell, guard = super()._adjust_sell_execution(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            drawdown_risk=drawdown_risk,
+            risk_score=risk_score,
+            sell_setup=sell_setup,
+            sell_threshold=sell_threshold,
+            max_sell=max_sell,
+        )
+
+        if sell_setup == "target-reduce" and self._is_structural_uptrend(latest, price, raw_state, confirmed_state):
+            self._structural_core_floor = self._structural_core_floor_for_symbol()
+            guard = self._join_guard(guard, f"{self.VERSION_LABEL}_structural_core_floor")
+
+        return threshold, adjusted_max_sell, guard
+
+    def _apply_sell_size_limit(
+        self,
+        max_sell: float,
+        current_pct: float,
+        pos: PositionState,
+        price: float,
+        latest: pd.Series,
+    ) -> float:
+        limited = super()._apply_sell_size_limit(max_sell, current_pct, pos, price, latest)
+        if self._structural_core_floor <= 0:
+            return limited
+        allowed_sell = max(0.0, current_pct - self._structural_core_floor)
+        return min(limited, allowed_sell)
+
+    def _is_structural_uptrend(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+    ) -> bool:
+        if raw_state != "MIXED" or confirmed_state != "MIXED" or price <= 0:
+            return False
+        if str(latest.get("btc_regime", "")) == "BEAR":
+            return False
+
+        ema72 = latest.get("ema72")
+        ema168 = latest.get("ema168")
+        ema168_slope = latest.get("ema168_slope")
+        if pd.isna(ema72) or pd.isna(ema168) or pd.isna(ema168_slope):
+            return False
+        return bool(price > ema168 and ema72 > ema168 and ema168_slope > 0)
+
+    def _structural_core_floor_for_symbol(self) -> float:
+        if self._current_symbol == "BTC/USDT":
+            return self.BTC_STRUCTURAL_CORE_FLOOR
+        return self.ALT_STRUCTURAL_CORE_FLOOR
+
+
+class V211BStrategy(V211AStrategy):
+    """V2.11B: require structural damage before risk-reduce in uptrends."""
+
+    VERSION_LABEL = "v2_11B"
+
+    @property
+    def name(self) -> str:
+        return "v2_11B"
+
+    def _classify_sell_setup(
+        self,
+        trend_risk: int,
+        risk_score: int,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        drawdown_risk: int,
+    ) -> str:
+        setup = super()._classify_sell_setup(
+            trend_risk=trend_risk,
+            risk_score=risk_score,
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            drawdown_risk=drawdown_risk,
+        )
+        if setup != "risk-reduce":
+            return setup
+        if not self._is_structural_uptrend(latest, price, raw_state, self._current_state):
+            return setup
+        if self._has_structural_sell_break(latest, price, trend_risk):
+            return setup
+        return "target-reduce"
+
+    @staticmethod
+    def _has_structural_sell_break(
+        latest: pd.Series,
+        price: float,
+        trend_risk: int,
+    ) -> bool:
+        if trend_risk >= 3:
+            return True
+        ema72 = latest.get("ema72")
+        ema168 = latest.get("ema168")
+        if pd.isna(ema72) or pd.isna(ema168):
+            return True
+        return bool(price < ema168 or ema72 < ema168)
+
+
+class V211CStrategy(V211BStrategy):
+    """V2.11C: add structural recovery buys after A/B sell protections."""
+
+    VERSION_LABEL = "v2_11C"
+    BTC_BEAR_ALT_RECOVERY_MIN_ROC5 = 0.0
+
+    @property
+    def name(self) -> str:
+        return "v2_11C"
+
+    def _is_recovery_override_setup(
+        self,
+        df: pd.DataFrame,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        risk_score: int,
+    ) -> bool:
+        if super()._is_recovery_override_setup(
+            df=df,
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            risk_score=risk_score,
+        ):
+            return True
+
+        if risk_score < 2 or trend_risk > 2:
+            return False
+        if not self._is_structural_recovery_candidate(latest, price, raw_state, confirmed_state):
+            return False
+
+        ema24 = latest.get("ema24")
+        roc_5 = latest.get("roc_5")
+        if pd.isna(ema24) or pd.isna(roc_5):
+            return False
+        return bool(price > ema24 and roc_5 > self.BTC_BEAR_ALT_RECOVERY_MIN_ROC5)
+
+    def _is_structural_recovery_candidate(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+    ) -> bool:
+        if raw_state != "MIXED" or confirmed_state != "MIXED" or price <= 0:
+            return False
+
+        btc_regime = str(latest.get("btc_regime", ""))
+        if btc_regime == "BEAR" and self._current_symbol == "BTC/USDT":
+            return False
+
+        ema72 = latest.get("ema72")
+        ema168 = latest.get("ema168")
+        ema168_slope = latest.get("ema168_slope")
+        if pd.isna(ema72) or pd.isna(ema168) or pd.isna(ema168_slope):
+            return False
+        return bool(price > ema168 and ema72 > ema168 and ema168_slope > 0)
