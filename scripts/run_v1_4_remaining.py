@@ -13,7 +13,7 @@ from crypto_spot_v1.benchmark import V1BenchmarkRunner
 from crypto_spot_v1.metrics import compute_score
 from crypto_spot_v1.evaluation import RESEARCH_MODE, VALID_MODES, normalize_mode, save_evaluation_run
 
-CANDIDATES = ["v2_10"]
+CANDIDATES = ["v2_12A"]
 
 
 def parse_args() -> argparse.Namespace:
