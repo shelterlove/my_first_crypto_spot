@@ -143,10 +143,18 @@ class V1BenchmarkRunner:
             df["btc_regime_timestamp"] = df["timestamp"].map(regime_ts_map).ffill()
         return all_dfs
 
-    def run_all(self, candidate_name: str = "v1") -> dict[str, StrategySummary]:
+    def run_all(
+        self,
+        candidate_name: str = "v1",
+        *,
+        collect_artifacts: bool = True,
+        window_step_multiplier: int = 1,
+    ) -> dict[str, StrategySummary]:
+        if window_step_multiplier < 1:
+            raise ValueError("window_step_multiplier must be >= 1")
         self.artifacts = {"equity_curves": [], "action_logs": []}
         strategy_names = ["buy_hold", candidate_name]
-        artifact_names = {candidate_name}
+        artifact_names = {candidate_name} if collect_artifacts else set()
         capital = self.config["capital"]["initial"]
         reserve = self.config["capital"]["reserve"]
         fee = self.config["cost"]["fee_rate"]
@@ -168,7 +176,7 @@ class V1BenchmarkRunner:
                         strategy=copy.deepcopy(strategy),
                         strategy_name=name,
                         window_days=wc["days"],
-                        step_days=wc["step_days"],
+                        step_days=wc["step_days"] * window_step_multiplier,
                         initial_capital=capital,
                         reserve=reserve,
                         fee_rate=fee,
@@ -176,7 +184,7 @@ class V1BenchmarkRunner:
                         warmup_bars=warmup_bars,
                         execution_mode=execution_mode,
                         artifact_sink=self.artifacts if name in artifact_names else None,
-                        collect_equity_curve=name == candidate_name,
+                        collect_equity_curve=collect_artifacts and name == candidate_name,
                     )
                     if wms:
                         results[name].perfs.append(StratPerf(

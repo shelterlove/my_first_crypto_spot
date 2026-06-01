@@ -131,7 +131,8 @@ def save_evaluation_run(
 
     raw_df.to_csv(run_dir / "raw_backtest_results.csv", index=False)
     summary_df.to_csv(run_dir / "summary_metrics.csv", index=False)
-    _write_artifacts(run_dir, actions_df, equity_df, write_nested=not research_mode)
+    if not research_mode:
+        _write_artifacts(run_dir, actions_df, equity_df, write_nested=True)
 
     metadata = _build_metadata(
         runner=runner,
@@ -390,8 +391,9 @@ def _artifact_policy_for_mode(mode: str | None) -> dict[str, list[str]]:
         return {
             "start_here": ["model_review.md", "model_review.json", "summary_metrics.csv"],
             "deep_dive": ["benchmark_metrics.csv", "regime_performance_report.csv", "raw_backtest_results.csv"],
-            "debug_only": ["action_logs.csv.gz", "equity_curves.csv.gz"],
             "deferred_to_complete": [
+                "action_logs.csv.gz",
+                "equity_curves.csv.gz",
                 "signal_attribution_buy.csv",
                 "signal_attribution_sell.csv",
                 "bull_underperformance_window_analysis.csv",
@@ -503,14 +505,10 @@ def build_results_index_markdown(mode: str = COMPLETE_MODE) -> str:
             "- `benchmark_metrics.csv`: Buy & Hold, exposure-matched, simple EMA168, and previous-best benchmarks.",
             "- `regime_performance_report.csv`: BULL/MIXED/BEAR behavior.",
             "- `raw_backtest_results.csv`: one row per symbol/window.",
-            "",
-            "## Debug Context",
-            "- `action_logs.csv.gz`: executed actions.",
-            "- `equity_curves.csv.gz`: equity curve records.",
             "- `strategy_manifest.json`: frozen strategy class, target table, config, and git commit.",
             "",
             "## Deferred To Complete Mode",
-            "- Signal attribution, sell-too-early, blocked-buy, state-transition diagnostics.",
+            "- Action logs, equity curves, signal attribution, sell-too-early, blocked-buy, state-transition diagnostics.",
             "- Timestamp/accounting audit, cost stress, warmup sensitivity, HTML report.",
             "",
         ])
@@ -1742,6 +1740,7 @@ def _simple_ema168_benchmark_rows(
     rows = []
     config = runner.config
     warmup = config.get("warmup_bars", 200)
+    step_multiplier = max(1, int(config.get("evaluation", {}).get("window_step_multiplier", 1)))
     low_position = config.get("evaluation", {}).get("simple_ema168_filter", {}).get("low_position_pct", 0.0)
     fee_rate = config.get("cost", {}).get("fee_rate", 0.0)
     candidate_lookup = {
@@ -1760,7 +1759,7 @@ def _simple_ema168_benchmark_rows(
                 eval_end = i + wc["days"] + warmup
                 window = df.iloc[eval_start:eval_end].copy().reset_index(drop=True)
                 if window.empty:
-                    i += wc["step_days"]
+                    i += wc["step_days"] * step_multiplier
                     continue
                 benchmark_return, avg_exposure = _simulate_simple_ema168_window(
                     df=df,
@@ -1783,7 +1782,7 @@ def _simple_ema168_benchmark_rows(
                     "win": bool(strategy_return >= benchmark_return) if not pd.isna(strategy_return) else np.nan,
                     "avg_exposure": avg_exposure,
                 })
-                i += wc["step_days"]
+                i += wc["step_days"] * step_multiplier
     return rows
 
 

@@ -35,20 +35,40 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable diagnostics when mode resolves to complete.",
     )
+    parser.add_argument(
+        "--step-multiplier",
+        type=int,
+        default=None,
+        help="Rolling-window step multiplier. Defaults to 2 in research and 1 in complete.",
+    )
     return parser.parse_args()
 
 
-def main(candidate_name: str, mode: str, diagnostics: bool = False) -> None:
+def main(
+    candidate_name: str,
+    mode: str,
+    diagnostics: bool = False,
+    step_multiplier: int | None = None,
+) -> None:
     config_path = PROJECT_ROOT / "configs" / "backtest_v1.json"
     output_dir = PROJECT_ROOT / "results"
     runner = V1BenchmarkRunner(str(config_path), output_dir=str(output_dir))
 
-    results = runner.run_all(candidate_name)
+    effective_mode = normalize_mode(mode)
+    if step_multiplier is None:
+        step_multiplier = 2 if effective_mode == RESEARCH_MODE else 1
+    if step_multiplier < 1:
+        raise ValueError("--step-multiplier must be >= 1")
+    runner.config.setdefault("evaluation", {})["window_step_multiplier"] = step_multiplier
+    results = runner.run_all(
+        candidate_name,
+        collect_artifacts=(effective_mode != RESEARCH_MODE),
+        window_step_multiplier=step_multiplier,
+    )
     scores = runner.score_all(results)
     verdict = runner.check_promotion(results, candidate_name)
 
     ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-    effective_mode = normalize_mode(mode)
     run_dir = save_evaluation_run(
         runner=runner,
         results=results,
@@ -63,6 +83,7 @@ def main(candidate_name: str, mode: str, diagnostics: bool = False) -> None:
     )
 
     print(f"{candidate_name} {effective_mode} evaluation complete")
+    print(f"window_step_multiplier={step_multiplier}")
     for name, score in sorted(scores.items(), key=lambda item: item[1], reverse=True):
         print(f"{name}: score={score:.4f}")
     print(f"run_dir={run_dir}")
@@ -72,4 +93,4 @@ def main(candidate_name: str, mode: str, diagnostics: bool = False) -> None:
 
 if __name__ == "__main__":
     args = parse_args()
-    main(args.candidate, args.mode, args.diagnostics)
+    main(args.candidate, args.mode, args.diagnostics, args.step_multiplier)

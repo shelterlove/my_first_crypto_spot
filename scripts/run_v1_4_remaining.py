@@ -24,22 +24,38 @@ def parse_args() -> argparse.Namespace:
         default=RESEARCH_MODE,
         help="research for fast candidate screening; complete for full diagnostics/audit.",
     )
+    parser.add_argument(
+        "--step-multiplier",
+        type=int,
+        default=None,
+        help="Rolling-window step multiplier. Defaults to 2 in research and 1 in complete.",
+    )
     return parser.parse_args()
 
 
-def main(mode: str = RESEARCH_MODE) -> None:
+def main(mode: str = RESEARCH_MODE, step_multiplier: int | None = None) -> None:
     import time as tmod
 
     mode = normalize_mode(mode)
+    if step_multiplier is None:
+        step_multiplier = 2 if mode == RESEARCH_MODE else 1
+    if step_multiplier < 1:
+        raise ValueError("--step-multiplier must be >= 1")
     config_path = PROJECT_ROOT / "configs" / "backtest_v1.json"
     output_dir = PROJECT_ROOT / "results"
     runner = V1BenchmarkRunner(str(config_path), str(output_dir))
+    runner.config.setdefault("evaluation", {})["window_step_multiplier"] = step_multiplier
 
     for candidate_name in CANDIDATES:
         print(f"\n====== {candidate_name} ======", flush=True)
+        print(f"  mode={mode}, step_multiplier={step_multiplier}", flush=True)
         t0 = tmod.time()
 
-        results = runner.run_all(candidate_name=candidate_name)
+        results = runner.run_all(
+            candidate_name=candidate_name,
+            collect_artifacts=(mode != RESEARCH_MODE),
+            window_step_multiplier=step_multiplier,
+        )
         print(f"  run_all: {tmod.time() - t0:.1f}s", flush=True)
 
         bh_summary = results.get("buy_hold")
@@ -70,4 +86,4 @@ def main(mode: str = RESEARCH_MODE) -> None:
 
 if __name__ == "__main__":
     args = parse_args()
-    main(args.mode)
+    main(args.mode, args.step_multiplier)
