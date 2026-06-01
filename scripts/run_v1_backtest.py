@@ -14,7 +14,7 @@ if str(PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from crypto_spot_v1.benchmark import V1BenchmarkRunner
-from crypto_spot_v1.evaluation import COMPLETE_MODE, VALID_MODES, normalize_mode, save_evaluation_run
+from crypto_spot_v1.evaluation import RESEARCH_MODE, VALID_MODES, normalize_mode, save_evaluation_run
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,13 +27,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         choices=sorted(VALID_MODES),
-        default=COMPLETE_MODE,
-        help="Compatibility option. All modes now run the same complete evaluation flow.",
+        default=RESEARCH_MODE,
+        help="research for fast candidate screening; complete for full diagnostics/audit.",
     )
     parser.add_argument(
         "--diagnostics",
         action="store_true",
-        help="Compatibility option. Diagnostics are enabled by default in the complete flow.",
+        help="Enable diagnostics when mode resolves to complete.",
     )
     return parser.parse_args()
 
@@ -59,14 +59,15 @@ def main(candidate_name: str, mode: str, diagnostics: bool = False) -> None:
         timestamp=ts,
         config_path=config_path,
         output_root=output_dir,
-        diagnostics_enabled=True,
+        diagnostics_enabled=diagnostics or effective_mode != RESEARCH_MODE,
     )
 
-    print(f"{candidate_name} complete evaluation complete")
+    print(f"{candidate_name} {effective_mode} evaluation complete")
     for name, score in sorted(scores.items(), key=lambda item: item[1], reverse=True):
         print(f"{name}: score={score:.4f}")
     print(f"run_dir={run_dir}")
-    print(f"report_path={run_dir / 'html_report.html'}")
+    if effective_mode != RESEARCH_MODE:
+        print(f"report_path={run_dir / 'html_report.html'}")
 
 
 if __name__ == "__main__":

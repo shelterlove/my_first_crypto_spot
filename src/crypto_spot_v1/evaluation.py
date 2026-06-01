@@ -35,12 +35,13 @@ from .html_report import (
     generate_evaluation_html as generate_html_report,
 )
 
+RESEARCH_MODE = "research"
 COMPLETE_MODE = "complete"
 FAST_MODE = "fast"
 FULL_MODE = "full"
 STRESS_MODE = "stress"
 LEGACY_MODES = {FAST_MODE, FULL_MODE, STRESS_MODE}
-VALID_MODES = {COMPLETE_MODE, *LEGACY_MODES}
+VALID_MODES = {RESEARCH_MODE, COMPLETE_MODE, *LEGACY_MODES}
 
 COMMON_RESULT_FILES = [
     "experiment_metadata.json",
@@ -83,12 +84,16 @@ def create_run_id(timestamp: str, candidate_name: str, mode: str) -> str:
 
 
 def normalize_mode(mode: str | None) -> str:
-    """Keep old CLI modes accepted while using one complete evaluation flow."""
+    """Map legacy modes onto the current research/complete evaluation tiers."""
     if mode is None:
-        return COMPLETE_MODE
+        return RESEARCH_MODE
     if mode not in VALID_MODES:
         raise ValueError(f"mode must be one of {sorted(VALID_MODES)}")
-    return COMPLETE_MODE
+    if mode == FAST_MODE:
+        return RESEARCH_MODE
+    if mode in {FULL_MODE, STRESS_MODE}:
+        return COMPLETE_MODE
+    return mode
 
 
 def save_evaluation_run(
@@ -106,14 +111,16 @@ def save_evaluation_run(
 ) -> Path:
     requested_mode = mode
     mode = normalize_mode(mode)
+    research_mode = mode == RESEARCH_MODE
 
     run_id = create_run_id(timestamp, candidate_name, mode)
     run_dir = output_root / "v1_eval_upgrade" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "action_logs").mkdir(exist_ok=True)
-    (run_dir / "equity_curves").mkdir(exist_ok=True)
-
-    diagnostics_enabled = True if diagnostics_enabled is None else diagnostics_enabled
+    if not research_mode:
+        (run_dir / "action_logs").mkdir(exist_ok=True)
+        (run_dir / "equity_curves").mkdir(exist_ok=True)
+    diagnostics_enabled = (not research_mode) if diagnostics_enabled is None else diagnostics_enabled
+    diagnostics_enabled = bool(diagnostics_enabled and not research_mode)
     config_snapshot = _effective_config(runner.config, candidate_name, mode, diagnostics_enabled)
     config_snapshot["evaluation"]["requested_mode"] = requested_mode
     artifacts = runner.artifacts or {}
@@ -124,7 +131,7 @@ def save_evaluation_run(
 
     raw_df.to_csv(run_dir / "raw_backtest_results.csv", index=False)
     summary_df.to_csv(run_dir / "summary_metrics.csv", index=False)
-    _write_artifacts(run_dir, actions_df, equity_df)
+    _write_artifacts(run_dir, actions_df, equity_df, write_nested=not research_mode)
 
     metadata = _build_metadata(
         runner=runner,
@@ -150,14 +157,19 @@ def save_evaluation_run(
         candidate_name=candidate_name,
         mode=mode,
     )
-    risk_df = build_risk_metrics(equity_df, raw_df, candidate_name)
-    active_df = build_active_management_metrics(equity_df, runner, candidate_name)
-    drawdown_df = build_drawdown_metrics(equity_df, candidate_name)
+    risk_df = pd.DataFrame()
+    active_df = pd.DataFrame()
+    drawdown_df = pd.DataFrame()
+    if not research_mode:
+        risk_df = build_risk_metrics(equity_df, raw_df, candidate_name)
+        active_df = build_active_management_metrics(equity_df, runner, candidate_name)
+        drawdown_df = build_drawdown_metrics(equity_df, candidate_name)
 
     benchmark_df.to_csv(run_dir / "benchmark_metrics.csv", index=False)
-    risk_df.to_csv(run_dir / "risk_metrics.csv", index=False)
-    active_df.to_csv(run_dir / "active_management_metrics.csv", index=False)
-    drawdown_df.to_csv(run_dir / "drawdown_metrics.csv", index=False)
+    if not research_mode:
+        risk_df.to_csv(run_dir / "risk_metrics.csv", index=False)
+        active_df.to_csv(run_dir / "active_management_metrics.csv", index=False)
+        drawdown_df.to_csv(run_dir / "drawdown_metrics.csv", index=False)
     reference_dir = _find_latest_reference_run(output_root, "v1_less_churn")
 
     diagnostic_outputs: dict[str, pd.DataFrame] = {}
@@ -175,59 +187,65 @@ def save_evaluation_run(
         )
 
     full_outputs: dict[str, pd.DataFrame] = {}
-    state_transition = (
-        build_state_transition_report_from_diagnostics(
-            diagnostic_outputs.get("per_bar_diagnostics", pd.DataFrame()),
-            runner,
-        )
-        if diagnostic_outputs
-        else build_state_transition_report(actions_df, runner)
-    )
     full_outputs = {
-        "timestamp_audit_report.csv": build_timestamp_audit(actions_df),
-        "accounting_audit_report.csv": build_accounting_audit(equity_df, actions_df, config_snapshot),
-        "signal_attribution_buy.csv": build_signal_attribution(actions_df, runner, side="buy"),
-        "signal_attribution_sell.csv": build_signal_attribution(actions_df, runner, side="sell"),
-        "state_transition_report.csv": state_transition,
         "regime_performance_report.csv": build_regime_performance_report(raw_df, candidate_name),
-        "bull_underperformance_window_analysis.csv": build_bull_underperformance_window_analysis(
-            raw_df=raw_df,
-            actions_df=actions_df,
-            diagnostic_outputs=diagnostic_outputs,
-            candidate_name=candidate_name,
-        ),
     }
-    if diagnostic_outputs:
+    if not research_mode:
+        state_transition = (
+            build_state_transition_report_from_diagnostics(
+                diagnostic_outputs.get("per_bar_diagnostics", pd.DataFrame()),
+                runner,
+            )
+            if diagnostic_outputs
+            else build_state_transition_report(actions_df, runner)
+        )
         full_outputs.update({
-            "risk_score_attribution_report.csv": diagnostic_outputs["risk_score_attribution_report"],
-            "exposure_diagnostics_report.csv": diagnostic_outputs["exposure_diagnostics_report"],
-            "buy_blocked_report.csv": diagnostic_outputs["buy_blocked_report"],
-            "sell_too_early_report.csv": diagnostic_outputs["sell_too_early_report"],
+            "timestamp_audit_report.csv": build_timestamp_audit(actions_df),
+            "accounting_audit_report.csv": build_accounting_audit(equity_df, actions_df, config_snapshot),
+            "signal_attribution_buy.csv": build_signal_attribution(actions_df, runner, side="buy"),
+            "signal_attribution_sell.csv": build_signal_attribution(actions_df, runner, side="sell"),
+            "state_transition_report.csv": state_transition,
+            "bull_underperformance_window_analysis.csv": build_bull_underperformance_window_analysis(
+                raw_df=raw_df,
+                actions_df=actions_df,
+                diagnostic_outputs=diagnostic_outputs,
+                candidate_name=candidate_name,
+            ),
         })
+        if diagnostic_outputs:
+            full_outputs.update({
+                "risk_score_attribution_report.csv": diagnostic_outputs["risk_score_attribution_report"],
+                "exposure_diagnostics_report.csv": diagnostic_outputs["exposure_diagnostics_report"],
+                "buy_blocked_report.csv": diagnostic_outputs["buy_blocked_report"],
+                "sell_too_early_report.csv": diagnostic_outputs["sell_too_early_report"],
+            })
     for filename, frame in full_outputs.items():
         frame.to_csv(run_dir / filename, index=False)
 
     stress_outputs: dict[str, pd.DataFrame] = {}
-    stress_outputs = {
-        "cost_stress_report.csv": build_cost_stress_report(raw_df, actions_df, config_snapshot, candidate_name),
-        "warmup_sensitivity_report.csv": build_warmup_sensitivity_report(runner, candidate_name),
-        "parameter_sensitivity_report.csv": build_parameter_sensitivity_report(config_snapshot),
-    }
-    for filename, frame in stress_outputs.items():
-        frame.to_csv(run_dir / filename, index=False)
+    if not research_mode:
+        stress_outputs = {
+            "cost_stress_report.csv": build_cost_stress_report(raw_df, actions_df, config_snapshot, candidate_name),
+            "warmup_sensitivity_report.csv": build_warmup_sensitivity_report(runner, candidate_name),
+            "parameter_sensitivity_report.csv": build_parameter_sensitivity_report(config_snapshot),
+        }
+        for filename, frame in stress_outputs.items():
+            frame.to_csv(run_dir / filename, index=False)
 
-    optimization_comparison_df = build_strategy_optimization_comparison(
-        run_dir=run_dir,
-        reference_dir=reference_dir,
-        candidate_name=candidate_name,
-        mode=mode,
-    )
-    if not optimization_comparison_df.empty:
-        optimization_comparison_df.to_csv(run_dir / "strategy_optimization_comparison.csv", index=False)
-        (run_dir / "strategy_optimization_summary.md").write_text(
-            build_strategy_optimization_summary(optimization_comparison_df, candidate_name),
-            encoding="utf-8",
+    optimization_comparison_df = pd.DataFrame()
+    if not research_mode:
+        optimization_comparison_df = build_strategy_optimization_comparison(
+            run_dir=run_dir,
+            reference_dir=reference_dir,
+            candidate_name=candidate_name,
+            mode=mode,
         )
+        if not optimization_comparison_df.empty:
+            optimization_comparison_df.to_csv(run_dir / "strategy_optimization_comparison.csv", index=False)
+            (run_dir / "strategy_optimization_summary.md").write_text(
+                build_strategy_optimization_summary(optimization_comparison_df, candidate_name),
+                encoding="utf-8",
+            )
 
     score_df = build_final_score_report(
         raw_df=raw_df,
@@ -256,42 +274,43 @@ def save_evaluation_run(
         encoding="utf-8",
     )
     (run_dir / "RESULTS_INDEX.md").write_text(
-        build_results_index_markdown(),
+        build_results_index_markdown(mode),
         encoding="utf-8",
     )
 
-    html = generate_html_report(
-        metadata=metadata,
-        summary_df=summary_df,
-        benchmark_df=benchmark_df,
-        risk_df=risk_df,
-        active_df=active_df,
-        drawdown_df=drawdown_df,
-        score_df=score_df,
-        raw_df=raw_df,
-        actions_df=actions_df,
-        equity_df=equity_df,
-        full_outputs=full_outputs,
-        stress_outputs=stress_outputs,
-        diagnostic_outputs=diagnostic_outputs,
-        optimization_comparison_df=optimization_comparison_df,
-        mode=mode,
-        verdict=verdict,
-    )
-    (run_dir / "html_report.html").write_text(html, encoding="utf-8")
-    (run_dir / "strategy_evaluation_summary.md").write_text(
-        build_html_strategy_evaluation_summary(
+    if not research_mode:
+        html = generate_html_report(
             metadata=metadata,
             summary_df=summary_df,
             benchmark_df=benchmark_df,
+            risk_df=risk_df,
+            active_df=active_df,
+            drawdown_df=drawdown_df,
+            score_df=score_df,
             raw_df=raw_df,
+            actions_df=actions_df,
+            equity_df=equity_df,
             full_outputs=full_outputs,
             stress_outputs=stress_outputs,
+            diagnostic_outputs=diagnostic_outputs,
             optimization_comparison_df=optimization_comparison_df,
+            mode=mode,
             verdict=verdict,
-        ),
-        encoding="utf-8",
-    )
+        )
+        (run_dir / "html_report.html").write_text(html, encoding="utf-8")
+        (run_dir / "strategy_evaluation_summary.md").write_text(
+            build_html_strategy_evaluation_summary(
+                metadata=metadata,
+                summary_df=summary_df,
+                benchmark_df=benchmark_df,
+                raw_df=raw_df,
+                full_outputs=full_outputs,
+                stress_outputs=stress_outputs,
+                optimization_comparison_df=optimization_comparison_df,
+                verdict=verdict,
+            ),
+            encoding="utf-8",
+        )
 
     diagnostics = {
         "candidate": candidate_name,
@@ -362,21 +381,42 @@ def build_model_review(
         "by_symbol": symbol_raw,
         "optimization_comparison": _compact_comparison(comparison_row),
         "score_components": _score_components(score_df),
-        "artifact_policy": {
+        "artifact_policy": _artifact_policy_for_mode(metadata.get("mode")),
+    }
+
+
+def _artifact_policy_for_mode(mode: str | None) -> dict[str, list[str]]:
+    if mode == RESEARCH_MODE:
+        return {
             "start_here": ["model_review.md", "model_review.json", "summary_metrics.csv"],
-            "deep_dive": [
-                "strategy_optimization_comparison.csv",
-                "regime_performance_report.csv",
-                "benchmark_metrics.csv",
+            "deep_dive": ["benchmark_metrics.csv", "regime_performance_report.csv", "raw_backtest_results.csv"],
+            "debug_only": ["action_logs.csv.gz", "equity_curves.csv.gz"],
+            "deferred_to_complete": [
+                "signal_attribution_buy.csv",
+                "signal_attribution_sell.csv",
                 "bull_underperformance_window_analysis.csv",
+                "risk_score_attribution_report.csv",
+                "buy_blocked_report.csv",
+                "sell_too_early_report.csv",
+                "cost_stress_report.csv",
+                "warmup_sensitivity_report.csv",
+                "html_report.html",
             ],
-            "audit_only": [
-                "raw_backtest_results.csv",
-                "action_logs.csv.gz",
-                "equity_curves.csv.gz",
-                "diagnostics/",
-            ],
-        },
+        }
+    return {
+        "start_here": ["model_review.md", "model_review.json", "summary_metrics.csv"],
+        "deep_dive": [
+            "strategy_optimization_comparison.csv",
+            "regime_performance_report.csv",
+            "benchmark_metrics.csv",
+            "bull_underperformance_window_analysis.csv",
+        ],
+        "audit_only": [
+            "raw_backtest_results.csv",
+            "action_logs.csv.gz",
+            "equity_curves.csv.gz",
+            "diagnostics/",
+        ],
     }
 
 
@@ -431,19 +471,49 @@ def build_model_review_markdown(review: dict[str, Any]) -> str:
             f"{_fmt_pct(row.get('median_excess_return'))} | {_fmt_pct(row.get('win_rate_vs_bh'))} | "
             f"{_fmt_pct(row.get('mean_max_drawdown'))} | {_fmt_pct(row.get('mean_exposure'))} |"
         )
-    lines.extend([
-        "",
-        "## Read Order",
-        "1. `model_review.md` for the decision.",
-        "2. `strategy_optimization_comparison.csv` for promotion criteria.",
-        "3. `regime_performance_report.csv` and `benchmark_metrics.csv` for attribution.",
-        "4. Raw logs and diagnostics only when debugging a specific failure.",
-        "",
-    ])
+    lines.extend(["", "## Read Order"])
+    if meta.get("mode") == RESEARCH_MODE:
+        lines.extend([
+            "1. `model_review.md` for the screening decision.",
+            "2. `summary_metrics.csv`, `benchmark_metrics.csv`, and `regime_performance_report.csv` for core metrics.",
+            "3. `raw_backtest_results.csv` for window-level checks.",
+            "4. Re-run with `--mode complete` before promotion or deep attribution.",
+            "",
+        ])
+    else:
+        lines.extend([
+            "1. `model_review.md` for the decision.",
+            "2. `strategy_optimization_comparison.csv` for promotion criteria.",
+            "3. `regime_performance_report.csv` and `benchmark_metrics.csv` for attribution.",
+            "4. Raw logs and diagnostics only when debugging a specific failure.",
+            "",
+        ])
     return "\n".join(lines)
 
 
-def build_results_index_markdown() -> str:
+def build_results_index_markdown(mode: str = COMPLETE_MODE) -> str:
+    if mode == RESEARCH_MODE:
+        return "\n".join([
+            "# Results Index",
+            "",
+            "## Research Review",
+            "- `model_review.md`: concise decision, headline metrics, regime/symbol tables.",
+            "- `model_review.json`: machine-readable version of the same review.",
+            "- `summary_metrics.csv`: top-level metrics for Buy & Hold and candidate.",
+            "- `benchmark_metrics.csv`: Buy & Hold, exposure-matched, simple EMA168, and previous-best benchmarks.",
+            "- `regime_performance_report.csv`: BULL/MIXED/BEAR behavior.",
+            "- `raw_backtest_results.csv`: one row per symbol/window.",
+            "",
+            "## Debug Context",
+            "- `action_logs.csv.gz`: executed actions.",
+            "- `equity_curves.csv.gz`: equity curve records.",
+            "- `strategy_manifest.json`: frozen strategy class, target table, config, and git commit.",
+            "",
+            "## Deferred To Complete Mode",
+            "- Signal attribution, sell-too-early, blocked-buy, state-transition diagnostics.",
+            "- Timestamp/accounting audit, cost stress, warmup sensitivity, HTML report.",
+            "",
+        ])
     return "\n".join([
         "# Results Index",
         "",
@@ -741,14 +811,22 @@ def _summary_metrics_df(results: dict[str, StrategySummary], scores: dict[str, f
     return pd.DataFrame(rows)
 
 
-def _write_artifacts(run_dir: Path, actions_df: pd.DataFrame, equity_df: pd.DataFrame) -> None:
+def _write_artifacts(
+    run_dir: Path,
+    actions_df: pd.DataFrame,
+    equity_df: pd.DataFrame,
+    *,
+    write_nested: bool = True,
+) -> None:
     if actions_df.empty:
         actions_df = pd.DataFrame(columns=_action_log_columns())
     if equity_df.empty:
         equity_df = pd.DataFrame()
-    actions_df.to_csv(run_dir / "action_logs" / "action_logs.csv.gz", index=False, compression="gzip")
-    equity_df.to_csv(run_dir / "equity_curves" / "equity_curves.csv.gz", index=False, compression="gzip")
-    # Compatibility copies for older local inspection scripts.
+    if write_nested:
+        (run_dir / "action_logs").mkdir(exist_ok=True)
+        (run_dir / "equity_curves").mkdir(exist_ok=True)
+        actions_df.to_csv(run_dir / "action_logs" / "action_logs.csv.gz", index=False, compression="gzip")
+        equity_df.to_csv(run_dir / "equity_curves" / "equity_curves.csv.gz", index=False, compression="gzip")
     actions_df.to_csv(run_dir / "action_logs.csv.gz", index=False, compression="gzip")
     equity_df.to_csv(run_dir / "equity_curves.csv.gz", index=False, compression="gzip")
 
