@@ -2022,3 +2022,217 @@ class V211CStrategy(V211BStrategy):
         if pd.isna(ema72) or pd.isna(ema168) or pd.isna(ema168_slope):
             return False
         return bool(price > ema168 and ema72 > ema168 and ema168_slope > 0)
+
+
+class V212AStrategy(V210Strategy):
+    """V2.12A: delay low-quality target-reduce exits in noisy uptrends."""
+
+    VERSION_LABEL = "v2_12A"
+    TARGET_REDUCE_DELAY_BARS = 2
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._target_reduce_delay_streak = 0
+
+    @property
+    def name(self) -> str:
+        return "v2_12A"
+
+    def _adjust_sell_execution(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        drawdown_risk: int,
+        risk_score: int,
+        sell_setup: str,
+        sell_threshold: float,
+        max_sell: float,
+    ) -> tuple[float, float, str]:
+        threshold, adjusted_max_sell, guard = super()._adjust_sell_execution(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            drawdown_risk=drawdown_risk,
+            risk_score=risk_score,
+            sell_setup=sell_setup,
+            sell_threshold=sell_threshold,
+            max_sell=max_sell,
+        )
+
+        if sell_setup != "target-reduce" or not self._is_noisy_uptrend_exit(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            risk_score=risk_score,
+        ):
+            self._target_reduce_delay_streak = 0
+            return threshold, adjusted_max_sell, guard
+
+        self._target_reduce_delay_streak += 1
+        if self._target_reduce_delay_streak < self.TARGET_REDUCE_DELAY_BARS:
+            return (
+                threshold,
+                0.0,
+                self._join_guard(guard, f"{self.VERSION_LABEL}_target_reduce_delayed"),
+            )
+        return threshold, adjusted_max_sell, self._join_guard(
+            guard,
+            f"{self.VERSION_LABEL}_target_reduce_delay_confirmed",
+        )
+
+    @staticmethod
+    def _is_noisy_uptrend_exit(
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        risk_score: int,
+    ) -> bool:
+        if raw_state != "MIXED" or confirmed_state not in {"BULL", "MIXED"}:
+            return False
+        if price <= 0 or trend_risk > 2 or risk_score > 2:
+            return False
+        if str(latest.get("btc_regime", "")) == "BEAR":
+            return False
+
+        ema72 = latest.get("ema72")
+        ema168 = latest.get("ema168")
+        ema168_slope = latest.get("ema168_slope")
+        if pd.isna(ema72) or pd.isna(ema168) or pd.isna(ema168_slope):
+            return False
+        return bool(price > ema72 and ema72 > ema168 and ema168_slope > 0)
+
+
+class V212BStrategy(V210Strategy):
+    """V2.12B: soften risk-reduce during raw-MIXED/confirmed-BULL pullbacks."""
+
+    VERSION_LABEL = "v2_12B"
+    RISK_REDUCE_PULLBACK_MAX_SELL_MULT = 0.50
+    RISK_REDUCE_PULLBACK_MIN_THRESHOLD = 0.10
+
+    @property
+    def name(self) -> str:
+        return "v2_12B"
+
+    def _adjust_sell_execution(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        drawdown_risk: int,
+        risk_score: int,
+        sell_setup: str,
+        sell_threshold: float,
+        max_sell: float,
+    ) -> tuple[float, float, str]:
+        threshold, adjusted_max_sell, guard = super()._adjust_sell_execution(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            drawdown_risk=drawdown_risk,
+            risk_score=risk_score,
+            sell_setup=sell_setup,
+            sell_threshold=sell_threshold,
+            max_sell=max_sell,
+        )
+        if sell_setup == "risk-reduce" and self._is_bull_pullback_risk_reduce(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            drawdown_risk=drawdown_risk,
+        ):
+            return (
+                max(threshold, self.RISK_REDUCE_PULLBACK_MIN_THRESHOLD),
+                adjusted_max_sell * self.RISK_REDUCE_PULLBACK_MAX_SELL_MULT,
+                self._join_guard(guard, f"{self.VERSION_LABEL}_risk_reduce_pullback_softened"),
+            )
+        return threshold, adjusted_max_sell, guard
+
+    @staticmethod
+    def _is_bull_pullback_risk_reduce(
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        drawdown_risk: int,
+    ) -> bool:
+        if raw_state != "MIXED" or confirmed_state != "BULL":
+            return False
+        if trend_risk > 2 or drawdown_risk < 2 or price <= 0:
+            return False
+        if str(latest.get("btc_regime", "")) == "BEAR":
+            return False
+
+        ema72 = latest.get("ema72")
+        ema168 = latest.get("ema168")
+        ema168_slope = latest.get("ema168_slope")
+        if pd.isna(ema72) or pd.isna(ema168) or pd.isna(ema168_slope):
+            return False
+        return bool(price > ema168 and ema72 > ema168 and ema168_slope > 0)
+
+
+class V212CStrategy(V212AStrategy):
+    """V2.12C: combine target-reduce delay with pullback risk-reduce softening."""
+
+    VERSION_LABEL = "v2_12C"
+    RISK_REDUCE_PULLBACK_MAX_SELL_MULT = V212BStrategy.RISK_REDUCE_PULLBACK_MAX_SELL_MULT
+    RISK_REDUCE_PULLBACK_MIN_THRESHOLD = V212BStrategy.RISK_REDUCE_PULLBACK_MIN_THRESHOLD
+
+    @property
+    def name(self) -> str:
+        return "v2_12C"
+
+    def _adjust_sell_execution(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        drawdown_risk: int,
+        risk_score: int,
+        sell_setup: str,
+        sell_threshold: float,
+        max_sell: float,
+    ) -> tuple[float, float, str]:
+        threshold, adjusted_max_sell, guard = super()._adjust_sell_execution(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            drawdown_risk=drawdown_risk,
+            risk_score=risk_score,
+            sell_setup=sell_setup,
+            sell_threshold=sell_threshold,
+            max_sell=max_sell,
+        )
+        if sell_setup == "risk-reduce" and V212BStrategy._is_bull_pullback_risk_reduce(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            drawdown_risk=drawdown_risk,
+        ):
+            return (
+                max(threshold, self.RISK_REDUCE_PULLBACK_MIN_THRESHOLD),
+                adjusted_max_sell * self.RISK_REDUCE_PULLBACK_MAX_SELL_MULT,
+                self._join_guard(guard, f"{self.VERSION_LABEL}_risk_reduce_pullback_softened"),
+            )
+        return threshold, adjusted_max_sell, guard
