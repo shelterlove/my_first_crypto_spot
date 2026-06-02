@@ -9,6 +9,7 @@ import pandas as pd
 
 from .benchmark import build_strategy
 from .decision import build_decision_record
+from .strategy_rebalance import Action
 from .strategy_rebalance import PortfolioState, PositionState
 
 
@@ -80,6 +81,69 @@ def decision_as_dict(decision: TargetPositionDecision) -> dict[str, Any]:
     return asdict(decision)
 
 
+def build_native_signal_frame(
+    *,
+    pair: str,
+    dataframe: pd.DataFrame,
+    strategy_name: str = "v2_19B",
+    capital: float = 100.0,
+    reserve: float = 20.0,
+    fee_rate: float = 0.001,
+    min_notional: float = 0.0,
+    startup_candle_count: int = 220,
+) -> pd.DataFrame:
+    """Generate stateful native actions over a full Freqtrade dataframe.
+
+    This is the backtest/dry-run bridge for Freqtrade. It keeps one native
+    strategy instance and one synthetic portfolio for the whole dataframe, so
+    confirmation bars, cooldowns, and last-trade state are preserved.
+    """
+    out = dataframe.copy()
+    out["native_action"] = "hold"
+    out["native_reason"] = ""
+    out["native_delta_pct"] = 0.0
+    out["native_current_pct"] = 0.0
+    out["native_target_pct"] = pd.NA
+
+    if out.empty:
+        return out
+
+    strategy = build_strategy(strategy_name, capital, reserve, fee_rate, min_notional=min_notional)
+    setattr(strategy, "TARGET_ALLOC", {pair: 1.0})
+    portfolio = PortfolioState(cash=capital, positions={pair: PositionState()})
+
+    start = max(1, int(startup_candle_count))
+    for idx in range(start, len(out)):
+        frame = out.iloc[: idx + 1]
+        latest = frame.iloc[-1]
+        price = float(latest["close"])
+        current_pct = _current_position_pct(portfolio, pair, price)
+        actions = strategy.compute_actions({pair: frame}, portfolio, {pair: price})
+        action = actions[0] if actions else None
+        record = build_decision_record(
+            timestamp=latest.get("timestamp", frame.index[-1]),
+            symbol=pair,
+            strategy_name=strategy_name,
+            action=action,
+            portfolio=portfolio,
+            price=price,
+            latest=latest,
+            no_trade_reason="" if action else "target_or_cooldown_not_actionable",
+        )
+        row_index = out.index[idx]
+        out.loc[row_index, "native_action"] = record["action"]
+        out.loc[row_index, "native_reason"] = record["reason"]
+        out.loc[row_index, "native_delta_pct"] = _action_delta_pct(record["side"], record["notional"], capital)
+        out.loc[row_index, "native_current_pct"] = current_pct
+        if record["target_pct"] is not None:
+            out.loc[row_index, "native_target_pct"] = record["target_pct"]
+
+        for item in actions:
+            _execute_synthetic_action(item, portfolio, fee_rate)
+
+    return out
+
+
 def _portfolio_for_pair(pair: str, price: float, capital: float, pct: float) -> PortfolioState:
     pct = max(0.0, min(1.0, float(pct)))
     position_value = capital * pct
@@ -88,6 +152,31 @@ def _portfolio_for_pair(pair: str, price: float, capital: float, pct: float) -> 
         cash=capital - position_value,
         positions={pair: PositionState(quantity=quantity, avg_cost=price if quantity > 0 else 0.0)},
     )
+
+
+def _current_position_pct(portfolio: PortfolioState, pair: str, price: float) -> float:
+    pos = portfolio.positions.get(pair, PositionState())
+    position_value = pos.quantity * price
+    total_value = max(portfolio.cash + position_value, 1e-9)
+    return max(0.0, min(1.0, position_value / total_value))
+
+
+def _execute_synthetic_action(action: Action, portfolio: PortfolioState, fee_rate: float) -> None:
+    pos = portfolio.positions.setdefault(action.symbol, PositionState())
+    notional = action.quantity * action.price
+    fee = notional * fee_rate
+    if action.side == "buy":
+        total_cost = pos.avg_cost * pos.quantity + notional
+        pos.quantity += action.quantity
+        pos.avg_cost = total_cost / pos.quantity if pos.quantity > 0 else 0.0
+        portfolio.cash -= notional + fee
+        return
+
+    portfolio.cash += notional - fee
+    pos.quantity -= action.quantity
+    if pos.quantity <= 1e-12:
+        pos.quantity = 0.0
+        pos.avg_cost = 0.0
 
 
 def _action_delta_pct(side: str, notional: float, capital: float) -> float:

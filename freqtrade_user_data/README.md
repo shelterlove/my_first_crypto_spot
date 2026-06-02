@@ -25,7 +25,21 @@ freqtrade backtesting --userdir freqtrade_user_data --config freqtrade_user_data
 ```
 
 Current status: the Freqtrade shell loads and runs full entry/exit backtests.
-Treat its performance numbers as execution-layer smoke tests only. The native
-strategy uses target-position partial rebalancing and rolling-window accounting,
-while this shell maps native buy/sell decisions to Freqtrade entry/full-exit
-signals plus position adjustment hooks.
+It generates signals from a stateful native-strategy simulation over the full
+dataframe, preserving confirmation bars, cooldowns, last-trade state, and the
+synthetic portfolio path.
+
+Treat Freqtrade performance numbers as execution-layer smoke tests only. The
+native strategy uses target-position partial rebalancing and rolling-window
+accounting, while Freqtrade reports trade-level entries/exits and may close a
+position fully when an exit signal fires.
+
+Signal consistency check:
+
+```bash
+python scripts/check_freqtrade_signal_consistency.py
+```
+
+This script shows why the first Freqtrade shell differed: stateless per-candle
+decisions generated thousands of extra entry/exit signals because they reset the
+native strategy state on every bar.

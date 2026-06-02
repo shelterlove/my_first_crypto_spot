@@ -23,7 +23,7 @@ except ImportError:  # Allows local compile/test without Freqtrade installed.
         pass
 
 from crypto_spot_v1 import strategy_utils
-from crypto_spot_v1.freqtrade_adapter import build_target_position_decision
+from crypto_spot_v1.freqtrade_adapter import build_native_signal_frame
 
 
 class CryptoSpotV26(IStrategy):
@@ -51,7 +51,17 @@ class CryptoSpotV26(IStrategy):
         frame = dataframe.copy()
         if "timestamp" not in frame.columns:
             frame["timestamp"] = frame["date"] if "date" in frame.columns else frame.index
-        return strategy_utils.compute_indicators(frame)
+        frame = strategy_utils.compute_indicators(frame)
+        return build_native_signal_frame(
+            pair=metadata["pair"],
+            dataframe=frame,
+            strategy_name=self.strategy_name,
+            capital=self.decision_capital,
+            reserve=self.reserve,
+            fee_rate=self.fee_rate,
+            min_notional=self.min_notional,
+            startup_candle_count=self.startup_candle_count,
+        )
 
     def populate_entry_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
         dataframe["enter_long"] = 0
@@ -59,13 +69,12 @@ class CryptoSpotV26(IStrategy):
         if dataframe.empty:
             return dataframe
 
-        for idx in range(self.startup_candle_count, len(dataframe)):
-            frame = dataframe.iloc[: idx + 1]
-            decision = self._decision(metadata["pair"], frame, current_position_pct=0.0)
-            if decision.action == "buy" and decision.delta_pct >= self.min_delta_pct:
-                row_index = dataframe.index[idx]
-                dataframe.loc[row_index, "enter_long"] = 1
-                dataframe.loc[row_index, "enter_tag"] = decision.reason[:255]
+        mask = (
+            (dataframe.get("native_action", "") == "buy")
+            & (dataframe.get("native_delta_pct", 0.0).astype(float) >= self.min_delta_pct)
+        )
+        dataframe.loc[mask, "enter_long"] = 1
+        dataframe.loc[mask, "enter_tag"] = dataframe.loc[mask, "native_reason"].astype(str).str[:255]
         return dataframe
 
     def populate_exit_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
@@ -74,13 +83,12 @@ class CryptoSpotV26(IStrategy):
         if dataframe.empty:
             return dataframe
 
-        for idx in range(self.startup_candle_count, len(dataframe)):
-            frame = dataframe.iloc[: idx + 1]
-            decision = self._decision(metadata["pair"], frame, current_position_pct=1.0)
-            if decision.action == "sell" and abs(decision.delta_pct) >= self.min_delta_pct:
-                row_index = dataframe.index[idx]
-                dataframe.loc[row_index, "exit_long"] = 1
-                dataframe.loc[row_index, "exit_tag"] = decision.reason[:255]
+        mask = (
+            (dataframe.get("native_action", "") == "sell")
+            & (dataframe.get("native_delta_pct", 0.0).astype(float).abs() >= self.min_delta_pct)
+        )
+        dataframe.loc[mask, "exit_long"] = 1
+        dataframe.loc[mask, "exit_tag"] = dataframe.loc[mask, "native_reason"].astype(str).str[:255]
         return dataframe
 
     def custom_stake_amount(
@@ -99,8 +107,10 @@ class CryptoSpotV26(IStrategy):
         dataframe = self._latest_dataframe(pair)
         if dataframe is None:
             return proposed_stake
-        decision = self._decision(pair, dataframe, current_position_pct=0.0)
-        stake = self._total_stake_amount(max_stake) * max(0.0, decision.delta_pct)
+        action, delta_pct = self._latest_native_action(dataframe)
+        if action != "buy":
+            return 0.0
+        stake = self._total_stake_amount(max_stake) * max(0.0, delta_pct)
         if min_stake is not None and 0 < stake < min_stake:
             return 0.0
         return min(stake, max_stake)
@@ -124,29 +134,16 @@ class CryptoSpotV26(IStrategy):
         if dataframe is None or self._already_adjusted_this_candle(trade, dataframe):
             return None
 
-        current_pct = self._trade_position_pct(trade, current_rate, max_stake)
-        decision = self._decision(pair, dataframe, current_position_pct=current_pct)
-        if abs(decision.delta_pct) < self.min_delta_pct:
+        action, delta_pct = self._latest_native_action(dataframe)
+        if abs(delta_pct) < self.min_delta_pct:
             return None
-        if decision.action == "buy":
-            return min(max_stake, self._total_stake_amount(max_stake) * decision.delta_pct)
-        if decision.action == "sell":
+        if action == "buy":
+            return min(max_stake, self._total_stake_amount(max_stake) * delta_pct)
+        if action == "sell":
             position_value = float(getattr(trade, "amount", 0.0) or 0.0) * current_rate
-            sell_value = self._total_stake_amount(max_stake) * abs(decision.delta_pct)
+            sell_value = self._total_stake_amount(max_stake) * abs(delta_pct)
             return -min(position_value, sell_value)
         return None
-
-    def _decision(self, pair: str, dataframe: pd.DataFrame, current_position_pct: float):
-        return build_target_position_decision(
-            pair=pair,
-            dataframe=dataframe,
-            current_position_pct=current_position_pct,
-            strategy_name=self.strategy_name,
-            capital=self.decision_capital,
-            reserve=self.reserve,
-            fee_rate=self.fee_rate,
-            min_notional=self.min_notional,
-        )
 
     def _latest_dataframe(self, pair: str) -> pd.DataFrame | None:
         data_provider = getattr(self, "dp", None)
@@ -155,11 +152,12 @@ class CryptoSpotV26(IStrategy):
         dataframe, _ = data_provider.get_analyzed_dataframe(pair, self.timeframe)
         return dataframe if dataframe is not None and not dataframe.empty else None
 
-    def _trade_position_pct(self, trade: Trade, current_rate: float, fallback_total: float) -> float:
-        amount = float(getattr(trade, "amount", 0.0) or 0.0)
-        value = amount * current_rate
-        denom = max(self._total_stake_amount(fallback_total), 1e-9)
-        return max(0.0, min(1.0, value / denom))
+    @staticmethod
+    def _latest_native_action(dataframe: pd.DataFrame) -> tuple[str, float]:
+        latest = dataframe.iloc[-1]
+        action = str(latest.get("native_action", "hold"))
+        delta_pct = float(latest.get("native_delta_pct", 0.0) or 0.0)
+        return action, delta_pct
 
     def _total_stake_amount(self, fallback: float) -> float:
         wallets = getattr(self, "wallets", None)
