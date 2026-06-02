@@ -43,9 +43,13 @@ Standard rolling aggregate:
 
 Decision score:
 
-- score: `77.68`
+- score: `80.82`
 - grade: `B+`
 - decision: `promote_reference`
+- CAGR: `74.94%` versus Buy & Hold `57.64%`
+- Sharpe: `1.28` versus Buy & Hold `1.01`
+- Sortino: `1.51` versus Buy & Hold `1.35`
+- Calmar: `1.39` versus Buy & Hold `0.79`
 
 The strategy remains strong over the full period and is more stable than
 `v2_19B`, but the rolling profile still shows weakness in 2023-2025 recovery
@@ -140,6 +144,8 @@ Validation versus fixed-adjustment `v2_19B`:
 | standard median excess | `-8.12%` | `-1.89%` |
 | standard win rate | `44.19%` | `48.84%` |
 | standard worst excess | `-246.76%` | `-246.76%` |
+| decision score | `78.04` | `80.82` |
+| Calmar | `1.34` | `1.39` |
 
 The improvement is mostly from BNB windows, while BTC and ETH show only small
 mean-excess declines and no worse median or worst rolling excess. The rule is

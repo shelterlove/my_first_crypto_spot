@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,8 @@ import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASE = PROJECT_ROOT / "results" / "freqtrade_eval"
+DATA_DIR = PROJECT_ROOT / "freqtrade_user_data" / "data" / "binance"
+
 LABELS = {
     "score": "综合评分",
     "decision": "评审结论",
@@ -56,31 +59,36 @@ LABELS = {
     "mean_exposure_pct": "平均仓位",
     "trade_count": "交易次数",
     "mean_trade_count": "平均交易次数",
+    "underwater_days": "水下天数",
+    "cagr_pct": "年化收益",
+    "sharpe": "Sharpe",
+    "sortino": "Sortino",
+    "calmar": "Calmar",
 }
+
 VALUE_LABELS = {
-    "long_term_excess": "长期超额",
-    "rolling_stability": "滚动稳定性",
-    "risk_control": "风险控制",
-    "trade_quality": "交易质量",
-    "logic_consistency": "逻辑一致性",
-    "aggregate_excess_positive": "组合超额为正",
+    "return_score": "收益能力",
+    "robustness_score": "跨窗口稳定性",
+    "risk_score": "风险控制",
+    "risk_adjusted_score": "风险调整收益",
+    "behavior_score": "交易行为",
+    "aggregate_excess_positive": "组合全周期超额为正",
     "all_pairs_full_excess_positive": "所有单币全周期超额为正",
-    "max_drawdown_not_extreme": "最大回撤未超过极限",
+    "max_drawdown_not_extreme": "最大回撤未超过硬上限",
     "rolling_available": "滚动窗口数据存在",
+    "rule_generality_review_passed": "规则通用性人工复核通过",
+    "defense_integrity_review_passed": "防守完整性人工复核通过",
     "full_excess_not_worse_than_reference": "全周期超额不弱于参考版本",
     "max_drawdown_not_materially_worse": "最大回撤未显著恶化",
     "rolling_median_excess_not_worse": "滚动中位超额未恶化",
     "rolling_win_rate_not_worse": "滚动胜率未恶化",
     "worst_rolling_excess_not_worse": "最差滚动超额未恶化",
+    "single_pair_median_not_materially_worse": "单币滚动中位表现未显著恶化",
+    "trade_count_same_regime": "交易频率仍在同一量级",
     "promote_reference": "晋级为参考版本",
     "paper_trade_candidate": "可进入模拟盘候选",
     "research_only": "仅保留研究",
     "reject": "拒绝",
-    "full_excess_pct": "全周期超额",
-    "standard_median_excess_pct": "标准滚动中位超额",
-    "standard_worst_excess_pct": "标准滚动最差超额",
-    "max_drawdown_pct": "最大回撤",
-    "manual review score": "人工逻辑评分",
     "True": "通过",
     "False": "未通过",
     "single": "单币",
@@ -108,7 +116,8 @@ def main() -> None:
         strategy=args.strategy,
         candidate=candidate,
         reference=reference,
-        logic_score=args.logic_score,
+        rule_generality_pass=args.rule_generality_pass,
+        defense_integrity_pass=args.defense_integrity_pass,
     )
     output_dir = Path(args.output_dir) if args.output_dir else candidate.baseline_dir / "review"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -132,7 +141,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reference-quick-dir", default="")
     parser.add_argument("--reference-standard-dir", default="")
     parser.add_argument("--output-dir", default="")
-    parser.add_argument("--logic-score", type=float, default=85.0)
+    parser.add_argument("--rule-generality-pass", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--defense-integrity-pass", action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args()
 
 
@@ -147,10 +157,13 @@ class Evaluation:
         self.standard_dir = standard_dir
         self.summary = read_csv(baseline_dir / "summary.csv")
         self.trades = read_csv(baseline_dir / "trades.csv", required=False)
+        self.equity = read_csv(baseline_dir / "single_fixed_portfolio_equity.csv", required=False)
         self.quick = read_csv(quick_dir / "rolling_summary.csv", required=False) if quick_dir else pd.DataFrame()
         self.quick_pairs = read_csv(quick_dir / "rolling_pair_summary.csv", required=False) if quick_dir else pd.DataFrame()
         self.standard = read_csv(standard_dir / "rolling_summary.csv", required=False) if standard_dir else pd.DataFrame()
         self.standard_pairs = read_csv(standard_dir / "rolling_pair_summary.csv", required=False) if standard_dir else pd.DataFrame()
+        self.stats = equity_stats(self.equity)
+        self.buyhold_stats = equity_stats(build_buyhold_equity(self))
 
     @property
     def aggregate(self) -> pd.Series:
@@ -185,11 +198,17 @@ def build_review(
     strategy: str,
     candidate: Evaluation,
     reference: Evaluation | None,
-    logic_score: float,
+    rule_generality_pass: bool,
+    defense_integrity_pass: bool,
 ) -> dict[str, Any]:
-    components = score_components(candidate, logic_score)
+    components = score_components(candidate)
     score = sum(item["weighted_points"] for item in components)
-    checks = promotion_checks(candidate, reference)
+    checks = promotion_checks(
+        candidate,
+        reference,
+        rule_generality_pass=rule_generality_pass,
+        defense_integrity_pass=defense_integrity_pass,
+    )
     decision = decide(score, checks, reference)
     return {
         "strategy": strategy,
@@ -203,23 +222,23 @@ def build_review(
     }
 
 
-def score_components(evaluation: Evaluation, logic_score: float) -> list[dict[str, Any]]:
-    long_term, long_term_detail = score_long_term(evaluation)
-    rolling, rolling_detail = score_rolling(evaluation)
+def score_components(evaluation: Evaluation) -> list[dict[str, Any]]:
+    returns, returns_detail = score_returns(evaluation)
+    robustness, robustness_detail = score_robustness(evaluation)
     risk, risk_detail = score_risk(evaluation)
-    trade, trade_detail = score_trade_quality(evaluation)
-    components = [
-        component("long_term_excess", 25, long_term, long_term_detail),
-        component("rolling_stability", 30, rolling, rolling_detail),
-        component("risk_control", 25, risk, risk_detail),
-        component("trade_quality", 10, trade, trade_detail),
-        component("logic_consistency", 10, clamp(logic_score, 0, 100), "manual review score"),
+    adjusted, adjusted_detail = score_risk_adjusted(evaluation)
+    behavior, behavior_detail = score_behavior(evaluation)
+    return [
+        component("return_score", 25, returns, returns_detail),
+        component("robustness_score", 25, robustness, robustness_detail),
+        component("risk_score", 20, risk, risk_detail),
+        component("risk_adjusted_score", 20, adjusted, adjusted_detail),
+        component("behavior_score", 10, behavior, behavior_detail),
     ]
-    return components
 
 
 def component(name: str, weight: float, value: float, detail: str = "") -> dict[str, Any]:
-    value = clamp(value, 0, 100)
+    value = clamp_score(value)
     return {
         "component": name,
         "weight": weight,
@@ -229,47 +248,48 @@ def component(name: str, weight: float, value: float, detail: str = "") -> dict[
     }
 
 
-def score_long_term(evaluation: Evaluation) -> tuple[float, str]:
+def score_returns(evaluation: Evaluation) -> tuple[float, str]:
     agg = evaluation.aggregate
     pairs = evaluation.pairs
-    excess_ratio = float(agg["total_excess_pct"]) / max(abs(float(agg["buyhold_total_return_pct"])), 100.0)
-    aggregate_score = clamp(excess_ratio / 0.50 * 100, 0, 100)
-    pair_positive = (pairs["total_excess_pct"] > 0).mean() * 100 if not pairs.empty else 0.0
-    min_pair_excess = float(pairs["total_excess_pct"].min()) if not pairs.empty else 0.0
-    min_pair_score = clamp(min_pair_excess / 100 * 100, 0, 100)
-    score = 0.55 * aggregate_score + 0.25 * pair_positive + 0.20 * min_pair_score
+    strat_ret = pct_to_ratio(agg["total_return_pct"])
+    bh_ret = pct_to_ratio(agg["buyhold_total_return_pct"])
+    excess_pp = num(agg["total_excess_pct"])
+    relative = relative_return_score(strat_ret, bh_ret, excess_pp)
+    excess = score_between(excess_pp, -50, 200)
+    pair_positive = num((pairs["total_excess_pct"] > 0).mean() * 100) if not pairs.empty else 0.0
+    min_pair_excess = num(pairs["total_excess_pct"].min()) if not pairs.empty else 0.0
+    min_pair = score_between(min_pair_excess, -50, 100)
+    cagr = relative_metric_score(evaluation.stats["cagr"], evaluation.buyhold_stats["cagr"], bad_ratio=0.80, good_ratio=1.20)
+    score = 0.30 * excess + 0.25 * relative + 0.20 * pair_positive + 0.15 * min_pair + 0.10 * cagr
     detail = (
-        f"aggregate_excess={float(agg['total_excess_pct']):.2f}pp, "
-        f"excess_vs_bh={excess_ratio:.2f}x, pair_positive={pair_positive:.1f}%, "
-        f"min_pair_excess={min_pair_excess:.2f}pp"
+        f"aggregate_excess={excess_pp:.2f}pp, strategy/bh_return={safe_ratio(strat_ret, bh_ret):.2f}x, "
+        f"pair_positive={pair_positive:.1f}%, min_pair_excess={min_pair_excess:.2f}pp, "
+        f"strategy/bh_cagr={safe_ratio(evaluation.stats['cagr'], evaluation.buyhold_stats['cagr']):.2f}x"
     )
     return score, detail
 
 
-def score_rolling(evaluation: Evaluation) -> tuple[float, str]:
-    rolling = evaluation.standard if not evaluation.standard.empty else evaluation.quick
-    pair_summary = evaluation.standard_pairs if not evaluation.standard_pairs.empty else evaluation.quick_pairs
+def score_robustness(evaluation: Evaluation) -> tuple[float, str]:
+    rolling = preferred_rolling(evaluation)
+    pair_summary = preferred_pair_rolling(evaluation)
     if rolling.empty:
         return 0.0, "no rolling data"
-    median_excess = float(rolling["excess_return_pct"].median())
-    win_rate = float((rolling["excess_return_pct"] > 0).mean() * 100)
-    worst_excess = float(rolling["excess_return_pct"].min())
-    median_score = clamp((median_excess + 50) / 50 * 100, 0, 100)
-    win_score = clamp(win_rate / 55 * 100, 0, 100)
-    worst_score = clamp((worst_excess + 300) / 300 * 100, 0, 100)
-    if pair_summary.empty:
-        pair_score = 50.0
-        pair_detail = "no pair rolling summary"
-    else:
-        pair_score = float(pair_summary["median_excess_pct"].apply(lambda x: clamp((x + 40) / 60 * 100, 0, 100)).mean())
-        pair_detail = "pair_medians=" + ",".join(
-            f"{row['pair']}:{float(row['median_excess_pct']):.2f}pp"
-            for _, row in pair_summary.iterrows()
-        )
+    median_excess = num(rolling["excess_return_pct"].median())
+    win_rate = num((rolling["excess_return_pct"] > 0).mean() * 100)
+    worst_excess = num(rolling["excess_return_pct"].min())
+    median_score = score_between(median_excess, -40, 10)
+    win_score = score_between(win_rate, 35, 55)
+    worst_score = score_between(worst_excess, -300, -100)
+    pair_score = 0.0
+    pair_medians = ""
+    if not pair_summary.empty:
+        pair_scores = [score_between(v, -40, 10) for v in pair_summary["median_excess_pct"]]
+        pair_score = num(pd.Series(pair_scores).mean())
+        pair_medians = ", ".join(f"{row.pair}:{row.median_excess_pct:.2f}pp" for row in pair_summary.itertuples())
     score = 0.35 * median_score + 0.25 * win_score + 0.25 * worst_score + 0.15 * pair_score
     detail = (
-        f"windows={len(rolling)}, median_excess={median_excess:.2f}pp, "
-        f"win_rate={win_rate:.1f}%, worst_excess={worst_excess:.2f}pp, {pair_detail}"
+        f"windows={len(rolling)}, median_excess={median_excess:.2f}pp, win_rate={win_rate:.1f}%, "
+        f"worst_excess={worst_excess:.2f}pp, pair_medians={pair_medians}"
     )
     return score, detail
 
@@ -277,89 +297,172 @@ def score_rolling(evaluation: Evaluation) -> tuple[float, str]:
 def score_risk(evaluation: Evaluation) -> tuple[float, str]:
     agg = evaluation.aggregate
     pairs = evaluation.pairs
-    rolling = evaluation.standard if not evaluation.standard.empty else evaluation.quick
-    agg_dd = abs(float(agg["max_drawdown_pct"]))
-    pair_worst_dd = abs(float(pairs["max_drawdown_pct"].min())) if not pairs.empty else agg_dd
-    rolling_worst_dd = abs(float(rolling["max_drawdown_pct"].min())) if not rolling.empty else agg_dd
-    dd_score = clamp((75 - agg_dd) / 35 * 100, 0, 100)
-    pair_score = clamp((75 - pair_worst_dd) / 35 * 100, 0, 100)
-    rolling_score = clamp((75 - rolling_worst_dd) / 35 * 100, 0, 100)
-    score = 0.45 * dd_score + 0.30 * pair_score + 0.25 * rolling_score
+    rolling = preferred_rolling(evaluation)
+    agg_dd = abs(num(agg["max_drawdown_pct"]))
+    worst_pair_dd = abs(num(pairs["max_drawdown_pct"].min())) if not pairs.empty else agg_dd
+    worst_rolling_dd = abs(num(rolling["max_drawdown_pct"].min())) if not rolling.empty else agg_dd
+    underwater_days = num(agg.get("underwater_days", 0))
+    bh_dd = abs(num(evaluation.buyhold_stats["max_drawdown_pct"]))
+    bh_underwater = num(evaluation.buyhold_stats["underwater_days"])
+    relative_dd = score_lower_better(safe_ratio(agg_dd, bh_dd), bad=1.00, good=0.60)
+    relative_underwater = score_lower_better(safe_ratio(underwater_days, bh_underwater), bad=1.20, good=0.70)
+    relative = 0.60 * relative_dd + 0.40 * relative_underwater
+    score = (
+        0.30 * score_lower_better(agg_dd, bad=70, good=40)
+        + 0.20 * score_lower_better(worst_pair_dd, bad=75, good=45)
+        + 0.20 * score_lower_better(worst_rolling_dd, bad=75, good=45)
+        + 0.15 * score_lower_better(underwater_days, bad=1200, good=500)
+        + 0.15 * relative
+    )
     detail = (
-        f"aggregate_dd=-{agg_dd:.2f}%, worst_pair_dd=-{pair_worst_dd:.2f}%, "
-        f"worst_rolling_dd=-{rolling_worst_dd:.2f}%"
+        f"aggregate_dd={-agg_dd:.2f}%, worst_pair_dd={-worst_pair_dd:.2f}%, "
+        f"worst_rolling_dd={-worst_rolling_dd:.2f}%, underwater_days={underwater_days:.0f}, "
+        f"dd_vs_bh={safe_ratio(agg_dd, bh_dd):.2f}x, underwater_vs_bh={safe_ratio(underwater_days, bh_underwater):.2f}x"
     )
     return score, detail
 
 
-def score_trade_quality(evaluation: Evaluation) -> tuple[float, str]:
-    pairs = evaluation.pairs
-    if pairs.empty:
-        return 50.0, "no pair rows"
-    timerange = str(pairs.iloc[0].get("timerange", ""))
-    years = max(timerange_years(timerange), 1.0)
-    trades_per_pair_year = float(pairs["trade_count"].fillna(0).mean()) / years
-    trade_score = 100 if 1 <= trades_per_pair_year <= 12 else clamp(100 - abs(trades_per_pair_year - 8) * 6, 0, 100)
-    exposure = float(pairs["avg_exposure_pct"].mean())
-    exposure_score = clamp(100 - abs(exposure - 60) * 2, 0, 100)
-    score = 0.65 * trade_score + 0.35 * exposure_score
-    detail = f"trades_per_pair_year={trades_per_pair_year:.2f}, mean_exposure={exposure:.2f}%"
+def score_risk_adjusted(evaluation: Evaluation) -> tuple[float, str]:
+    stats = evaluation.stats
+    bh = evaluation.buyhold_stats
+    absolute = (
+        0.40 * score_between(stats["calmar"], 0.0, 1.20)
+        + 0.35 * score_between(stats["sortino"], 0.0, 1.80)
+        + 0.25 * score_between(stats["sharpe"], 0.0, 1.20)
+    )
+    relative = (
+        0.40 * relative_metric_score(stats["calmar"], bh["calmar"], bad_ratio=0.80, good_ratio=1.20)
+        + 0.35 * relative_metric_score(stats["sortino"], bh["sortino"], bad_ratio=0.80, good_ratio=1.20)
+        + 0.25 * relative_metric_score(stats["sharpe"], bh["sharpe"], bad_ratio=0.80, good_ratio=1.20)
+    )
+    score = 0.60 * absolute + 0.40 * relative
+    detail = (
+        f"cagr={stats['cagr'] * 100:.2f}%, sharpe={stats['sharpe']:.2f}, "
+        f"sortino={stats['sortino']:.2f}, calmar={stats['calmar']:.2f}; "
+        f"bh_cagr={bh['cagr'] * 100:.2f}%, bh_sharpe={bh['sharpe']:.2f}, "
+        f"bh_sortino={bh['sortino']:.2f}, bh_calmar={bh['calmar']:.2f}"
+    )
     return score, detail
 
 
-def promotion_checks(candidate: Evaluation, reference: Evaluation | None) -> list[dict[str, Any]]:
-    checks = intrinsic_checks(candidate)
+def score_behavior(evaluation: Evaluation) -> tuple[float, str]:
+    agg = evaluation.aggregate
+    pairs = evaluation.pairs
+    years = timerange_years(str(agg["timerange"]))
+    trade_counts = pairs["trade_count"].fillna(0) if not pairs.empty else pd.Series([0.0])
+    trades_per_pair_year = num(trade_counts.mean() / years)
+    exposure = num(agg["avg_exposure_pct"])
+    trade_score = trade_frequency_score(trades_per_pair_year)
+    exposure_score = band_score(exposure, low_bad=35, low_good=50, high_good=70, high_bad=85)
+    min_trades = max(num(trade_counts.min()), 1.0)
+    max_trades = num(trade_counts.max())
+    balance_ratio = max_trades / min_trades
+    balance_score = score_lower_better(balance_ratio, bad=4.0, good=2.0)
+    score = 0.45 * trade_score + 0.35 * exposure_score + 0.20 * balance_score
+    detail = (
+        f"trades_per_pair_year={trades_per_pair_year:.2f}, mean_exposure={exposure:.2f}%, "
+        f"pair_trade_balance={balance_ratio:.2f}x"
+    )
+    return score, detail
+
+
+def preferred_rolling(evaluation: Evaluation) -> pd.DataFrame:
+    return evaluation.standard if not evaluation.standard.empty else evaluation.quick
+
+
+def preferred_pair_rolling(evaluation: Evaluation) -> pd.DataFrame:
+    return evaluation.standard_pairs if not evaluation.standard_pairs.empty else evaluation.quick_pairs
+
+
+def promotion_checks(
+    candidate: Evaluation,
+    reference: Evaluation | None,
+    *,
+    rule_generality_pass: bool,
+    defense_integrity_pass: bool,
+) -> list[dict[str, Any]]:
+    agg = candidate.aggregate
+    pairs = candidate.pairs
+    rolling = preferred_rolling(candidate)
+    checks = [
+        check("aggregate_excess_positive", num(agg["total_excess_pct"]) > 0, f"aggregate_excess={num(agg['total_excess_pct']):.2f}pp"),
+        check(
+            "all_pairs_full_excess_positive",
+            not pairs.empty and bool((pairs["total_excess_pct"] > 0).all()),
+            "per_pair_excess=" + ", ".join(f"{row.pair}:{row.total_excess_pct:.2f}pp" for row in pairs.itertuples()),
+        ),
+        check("max_drawdown_not_extreme", num(agg["max_drawdown_pct"]) >= -70, f"aggregate_dd={num(agg['max_drawdown_pct']):.2f}%"),
+        check("rolling_available", not rolling.empty, f"windows={len(rolling)}"),
+        check(
+            "rule_generality_review_passed",
+            rule_generality_pass,
+            "人工复核：规则不得包含 BTC/ETH/BNB 专属阈值或只为单一历史片段服务",
+        ),
+        check(
+            "defense_integrity_review_passed",
+            defense_integrity_pass,
+            "人工复核：BEAR 退出、trend-break、risk-reduce 防守不得被削弱",
+        ),
+    ]
     if reference is None:
         return checks
-    checks.extend(reference_checks(candidate, reference))
-    return checks
 
-
-def intrinsic_checks(evaluation: Evaluation) -> list[dict[str, Any]]:
-    agg = evaluation.aggregate
-    rolling = evaluation.standard if not evaluation.standard.empty else evaluation.quick
-    pairs = evaluation.pairs
-    return [
-        check("aggregate_excess_positive", float(agg["total_excess_pct"]) > 0, f"{float(agg['total_excess_pct']):.2f} percentage points"),
-        check("all_pairs_full_excess_positive", bool((pairs["total_excess_pct"] > 0).all()), ""),
-        check("max_drawdown_not_extreme", float(agg["max_drawdown_pct"]) >= -65, f"{float(agg['max_drawdown_pct']):.2f}%"),
-        check("rolling_available", not rolling.empty, f"{len(rolling)} windows"),
-    ]
-
-
-def reference_checks(candidate: Evaluation, reference: Evaluation) -> list[dict[str, Any]]:
-    cand_agg = candidate.aggregate
     ref_agg = reference.aggregate
-    cand_roll = candidate.standard if not candidate.standard.empty else candidate.quick
-    ref_roll = reference.standard if not reference.standard.empty else reference.quick
-    checks = [
+    checks.extend([
         check(
             "full_excess_not_worse_than_reference",
-            float(cand_agg["total_excess_pct"]) >= float(ref_agg["total_excess_pct"]) - 1,
-            delta_detail(float(cand_agg["total_excess_pct"]), float(ref_agg["total_excess_pct"]), "pp"),
+            num(agg["total_excess_pct"]) >= num(ref_agg["total_excess_pct"]) - 1,
+            delta_detail(num(agg["total_excess_pct"]), num(ref_agg["total_excess_pct"]), "pp"),
         ),
         check(
             "max_drawdown_not_materially_worse",
-            float(cand_agg["max_drawdown_pct"]) >= float(ref_agg["max_drawdown_pct"]) - 3,
-            delta_detail(float(cand_agg["max_drawdown_pct"]), float(ref_agg["max_drawdown_pct"]), "pp"),
+            num(agg["max_drawdown_pct"]) >= num(ref_agg["max_drawdown_pct"]) - 3,
+            delta_detail(num(agg["max_drawdown_pct"]), num(ref_agg["max_drawdown_pct"]), "pp"),
         ),
-    ]
+    ])
+
+    cand_roll = preferred_rolling(candidate)
+    ref_roll = preferred_rolling(reference)
     if not cand_roll.empty and not ref_roll.empty:
         checks.extend([
             check(
                 "rolling_median_excess_not_worse",
-                float(cand_roll["excess_return_pct"].median()) >= float(ref_roll["excess_return_pct"].median()) - 1,
-                delta_detail(float(cand_roll["excess_return_pct"].median()), float(ref_roll["excess_return_pct"].median()), "pp"),
+                num(cand_roll["excess_return_pct"].median()) >= num(ref_roll["excess_return_pct"].median()) - 1,
+                delta_detail(num(cand_roll["excess_return_pct"].median()), num(ref_roll["excess_return_pct"].median()), "pp"),
             ),
             check(
                 "rolling_win_rate_not_worse",
-                (cand_roll["excess_return_pct"] > 0).mean() * 100 >= (ref_roll["excess_return_pct"] > 0).mean() * 100 - 2,
-                delta_detail((cand_roll["excess_return_pct"] > 0).mean() * 100, (ref_roll["excess_return_pct"] > 0).mean() * 100, "pp"),
+                num((cand_roll["excess_return_pct"] > 0).mean() * 100) >= num((ref_roll["excess_return_pct"] > 0).mean() * 100) - 2,
+                delta_detail(num((cand_roll["excess_return_pct"] > 0).mean() * 100), num((ref_roll["excess_return_pct"] > 0).mean() * 100), "pp"),
             ),
             check(
                 "worst_rolling_excess_not_worse",
-                float(cand_roll["excess_return_pct"].min()) >= float(ref_roll["excess_return_pct"].min()) - 1,
-                delta_detail(float(cand_roll["excess_return_pct"].min()), float(ref_roll["excess_return_pct"].min()), "pp"),
+                num(cand_roll["excess_return_pct"].min()) >= num(ref_roll["excess_return_pct"].min()) - 5,
+                delta_detail(num(cand_roll["excess_return_pct"].min()), num(ref_roll["excess_return_pct"].min()), "pp"),
+            ),
+        ])
+
+    cand_pairs = preferred_pair_rolling(candidate)
+    ref_pairs = preferred_pair_rolling(reference)
+    if not cand_pairs.empty and not ref_pairs.empty:
+        merged = cand_pairs[["pair", "median_excess_pct", "mean_trade_count"]].merge(
+            ref_pairs[["pair", "median_excess_pct", "mean_trade_count"]],
+            on="pair",
+            suffixes=("_candidate", "_reference"),
+        )
+        worst_pair_delta = num((merged["median_excess_pct_candidate"] - merged["median_excess_pct_reference"]).min())
+        cand_trades = num(merged["mean_trade_count_candidate"].mean())
+        ref_trades = max(num(merged["mean_trade_count_reference"].mean()), 1.0)
+        checks.extend([
+            check(
+                "single_pair_median_not_materially_worse",
+                worst_pair_delta >= -10,
+                f"worst_pair_median_delta={worst_pair_delta:.2f}pp",
+            ),
+            check(
+                "trade_count_same_regime",
+                cand_trades <= ref_trades * 1.5,
+                f"candidate_mean_trades={cand_trades:.2f}, reference_mean_trades={ref_trades:.2f}",
             ),
         ])
     return checks
@@ -373,9 +476,9 @@ def decide(score: float, checks: list[dict[str, Any]], reference: Evaluation | N
     failed = [item for item in checks if not item["pass"]]
     if failed:
         return "research_only" if score >= 65 else "reject"
-    if reference is not None and score >= 70:
+    if reference is not None and score >= 75:
         return "promote_reference"
-    if score >= 75:
+    if score >= 80:
         return "paper_trade_candidate"
     return "research_only"
 
@@ -396,19 +499,175 @@ def summary_payload(evaluation: Evaluation | None) -> dict[str, Any] | None:
     if evaluation is None:
         return None
     agg = evaluation.aggregate
-    rolling = evaluation.standard if not evaluation.standard.empty else evaluation.quick
+    rolling = preferred_rolling(evaluation)
+    stats = evaluation.stats
+    bh = evaluation.buyhold_stats
     return {
         "baseline_dir": str(evaluation.baseline_dir),
-        "total_return_pct": round(float(agg["total_return_pct"]), 4),
-        "buyhold_total_return_pct": round(float(agg["buyhold_total_return_pct"]), 4),
-        "total_excess_pct": round(float(agg["total_excess_pct"]), 4),
-        "max_drawdown_pct": round(float(agg["max_drawdown_pct"]), 4),
-        "avg_exposure_pct": round(float(agg["avg_exposure_pct"]), 4),
+        "total_return_pct": round(num(agg["total_return_pct"]), 4),
+        "buyhold_total_return_pct": round(num(agg["buyhold_total_return_pct"]), 4),
+        "total_excess_pct": round(num(agg["total_excess_pct"]), 4),
+        "max_drawdown_pct": round(num(agg["max_drawdown_pct"]), 4),
+        "underwater_days": round(num(agg.get("underwater_days", 0)), 4),
+        "avg_exposure_pct": round(num(agg["avg_exposure_pct"]), 4),
+        "cagr_pct": round(stats["cagr"] * 100, 4),
+        "sharpe": round(stats["sharpe"], 4),
+        "sortino": round(stats["sortino"], 4),
+        "calmar": round(stats["calmar"], 4),
+        "buyhold_cagr_pct": round(bh["cagr"] * 100, 4),
+        "buyhold_sharpe": round(bh["sharpe"], 4),
+        "buyhold_sortino": round(bh["sortino"], 4),
+        "buyhold_calmar": round(bh["calmar"], 4),
         "rolling_windows": int(len(rolling)) if not rolling.empty else 0,
-        "rolling_median_excess_pct": round(float(rolling["excess_return_pct"].median()), 4) if not rolling.empty else None,
-        "rolling_win_rate_pct": round(float((rolling["excess_return_pct"] > 0).mean() * 100), 4) if not rolling.empty else None,
-        "rolling_worst_excess_pct": round(float(rolling["excess_return_pct"].min()), 4) if not rolling.empty else None,
+        "rolling_median_excess_pct": round(num(rolling["excess_return_pct"].median()), 4) if not rolling.empty else None,
+        "rolling_win_rate_pct": round(num((rolling["excess_return_pct"] > 0).mean() * 100), 4) if not rolling.empty else None,
+        "rolling_worst_excess_pct": round(num(rolling["excess_return_pct"].min()), 4) if not rolling.empty else None,
     }
+
+
+def build_buyhold_equity(evaluation: Evaluation) -> pd.DataFrame:
+    if evaluation.equity.empty or evaluation.pairs.empty:
+        return pd.DataFrame()
+    dates = pd.DataFrame({"date": normalize_dates(evaluation.equity["date"])})
+    sleeves: list[pd.Series] = []
+    for row in evaluation.pairs.itertuples():
+        data_path = DATA_DIR / f"{str(row.pair).replace('/', '_')}-1d.feather"
+        if not data_path.exists():
+            return pd.DataFrame()
+        try:
+            prices = pd.read_feather(data_path, columns=["date", "close"])
+        except Exception:
+            return pd.DataFrame()
+        prices = prices.sort_values("date").copy()
+        prices["date"] = normalize_dates(prices["date"])
+        aligned = pd.merge_asof(dates, prices, on="date", direction="backward")
+        aligned["close"] = aligned["close"].ffill().bfill()
+        if aligned["close"].isna().all():
+            return pd.DataFrame()
+        start_close = num(aligned["close"].iloc[0])
+        sleeves.append(num(row.start_wallet) * aligned["close"] / start_close)
+    equity = sum(sleeves)
+    return pd.DataFrame({"date": dates["date"], "equity": equity})
+
+
+def equity_stats(df: pd.DataFrame) -> dict[str, float]:
+    empty = {
+        "cagr": 0.0,
+        "sharpe": 0.0,
+        "sortino": 0.0,
+        "calmar": 0.0,
+        "max_drawdown_pct": 0.0,
+        "underwater_days": 0.0,
+    }
+    if df.empty or "equity" not in df:
+        return empty
+    frame = df[["date", "equity"]].dropna().copy()
+    if len(frame) < 3:
+        return empty
+    frame["date"] = normalize_dates(frame["date"])
+    frame = frame.sort_values("date")
+    equity = frame["equity"].astype(float)
+    returns = equity.pct_change().dropna()
+    years = max((frame["date"].iloc[-1] - frame["date"].iloc[0]).days / 365.25, 0.1)
+    total = equity.iloc[-1] / equity.iloc[0]
+    cagr = total ** (1 / years) - 1 if total > 0 else -1.0
+    drawdown = equity / equity.cummax() - 1
+    max_dd = abs(num(drawdown.min()))
+    underwater_days = num((drawdown < -1e-9).sum())
+    sharpe = annualized_ratio(returns)
+    sortino = annualized_ratio(returns, downside_only=True)
+    calmar = cagr / max_dd if max_dd > 0 else 0.0
+    return {
+        "cagr": finite(cagr),
+        "sharpe": finite(sharpe),
+        "sortino": finite(sortino),
+        "calmar": finite(calmar),
+        "max_drawdown_pct": finite(-max_dd * 100),
+        "underwater_days": underwater_days,
+    }
+
+
+def annualized_ratio(returns: pd.Series, *, downside_only: bool = False) -> float:
+    if returns.empty:
+        return 0.0
+    denominator_source = returns[returns < 0] if downside_only else returns
+    std = num(denominator_source.std())
+    if std <= 0:
+        return 0.0
+    return finite(num(returns.mean()) / std * math.sqrt(365))
+
+
+def normalize_dates(values: pd.Series) -> pd.Series:
+    return pd.to_datetime(values, utc=True).dt.tz_convert(None).astype("datetime64[ns]")
+
+
+def relative_return_score(strategy_return: float, benchmark_return: float, excess_pp: float) -> float:
+    if benchmark_return > 0:
+        return score_between(safe_ratio(strategy_return, benchmark_return), 0.80, 1.20)
+    return score_between(excess_pp, 0, 100)
+
+
+def relative_metric_score(strategy: float, benchmark: float, *, bad_ratio: float, good_ratio: float) -> float:
+    if benchmark > 0:
+        return score_between(safe_ratio(strategy, benchmark), bad_ratio, good_ratio)
+    return score_between((strategy - benchmark) * 100, 0, 30)
+
+
+def trade_frequency_score(trades_per_pair_year: float) -> float:
+    if 1 <= trades_per_pair_year <= 12:
+        return 100.0
+    if trades_per_pair_year < 1:
+        return score_between(trades_per_pair_year, 0, 1)
+    return score_lower_better(trades_per_pair_year, bad=20, good=12)
+
+
+def band_score(value: float, *, low_bad: float, low_good: float, high_good: float, high_bad: float) -> float:
+    if low_good <= value <= high_good:
+        return 100.0
+    if value < low_good:
+        return score_between(value, low_bad, low_good)
+    return score_lower_better(value, bad=high_bad, good=high_good)
+
+
+def score_between(value: float, bad: float, good: float) -> float:
+    if good == bad:
+        return 100.0 if value >= good else 0.0
+    return clamp_score((value - bad) / (good - bad) * 100)
+
+
+def score_lower_better(value: float, *, bad: float, good: float) -> float:
+    if bad == good:
+        return 100.0 if value <= good else 0.0
+    return clamp_score((bad - value) / (bad - good) * 100)
+
+
+def pct_to_ratio(value: Any) -> float:
+    return num(value) / 100
+
+
+def safe_ratio(numerator: float, denominator: float) -> float:
+    if abs(denominator) < 1e-12:
+        return 0.0
+    return finite(numerator / denominator)
+
+
+def num(value: Any) -> float:
+    try:
+        return finite(float(value))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def finite(value: float) -> float:
+    return float(value) if math.isfinite(float(value)) else 0.0
+
+
+def clamp_score(value: float) -> float:
+    return max(0.0, min(100.0, finite(value)))
+
+
+def clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, finite(value)))
 
 
 def render_html(review: dict[str, Any], candidate: Evaluation, reference: Evaluation | None) -> str:
@@ -423,10 +682,11 @@ def render_html(review: dict[str, Any], candidate: Evaluation, reference: Evalua
         table_section("评分拆解", pd.DataFrame(review["components"])),
         table_section("晋级检查", pd.DataFrame(review["checks"])),
         scoring_policy_section(),
+        risk_adjusted_section(review),
         table_section("全周期表现：组合与单币", format_baseline(candidate.summary)),
         rolling_section("快速滚动回测", candidate.quick, candidate.quick_pairs),
         rolling_section("标准滚动回测", candidate.standard, candidate.standard_pairs),
-        worst_windows_section(candidate.standard if not candidate.standard.empty else candidate.quick),
+        worst_windows_section(preferred_rolling(candidate)),
     ]
     if reference is not None:
         sections.append(reference_delta_section(candidate, reference))
@@ -444,8 +704,8 @@ def score_cards(review: dict[str, Any]) -> str:
         ("评审结论", translate_value(review["decision"]), ""),
         ("全周期超额", fmt_pp(summary["total_excess_pct"]), "百分点"),
         ("最大回撤", fmt_pct(summary["max_drawdown_pct"]), ""),
+        ("Calmar", f"{summary['calmar']:.2f}", ""),
         ("滚动中位超额", fmt_pp(summary["rolling_median_excess_pct"]), "百分点"),
-        ("最差滚动超额", fmt_pp(summary["rolling_worst_excess_pct"]), "百分点"),
     ]
     body = "".join(
         f"<div class='card'><div class='label'>{esc(label)}</div><div class='value'>{esc(value)}</div><div class='hint'>{esc(hint)}</div></div>"
@@ -457,7 +717,7 @@ def score_cards(review: dict[str, Any]) -> str:
 def format_baseline(df: pd.DataFrame) -> pd.DataFrame:
     cols = [
         "mode", "pair", "total_return_pct", "buyhold_total_return_pct", "total_excess_pct",
-        "max_drawdown_pct", "avg_exposure_pct", "trade_count", "win_rate_pct",
+        "max_drawdown_pct", "underwater_days", "avg_exposure_pct", "trade_count", "win_rate_pct",
     ]
     return df[cols].copy()
 
@@ -498,29 +758,56 @@ def reference_delta_section(candidate: Evaluation, reference: Evaluation) -> str
     cand = candidate.aggregate
     ref = reference.aggregate
     rows = [{
-        "metric": "full_excess_pct",
+        "metric": "total_excess_pct",
         "candidate": fmt_pp(cand["total_excess_pct"]),
         "reference": fmt_pp(ref["total_excess_pct"]),
-        "delta": fmt_pp(cand["total_excess_pct"] - ref["total_excess_pct"]),
+        "delta": fmt_pp(num(cand["total_excess_pct"]) - num(ref["total_excess_pct"])),
     }, {
         "metric": "max_drawdown_pct",
         "candidate": fmt_pct(cand["max_drawdown_pct"]),
         "reference": fmt_pct(ref["max_drawdown_pct"]),
-        "delta": fmt_pp(cand["max_drawdown_pct"] - ref["max_drawdown_pct"]),
+        "delta": fmt_pp(num(cand["max_drawdown_pct"]) - num(ref["max_drawdown_pct"])),
+    }, {
+        "metric": "calmar",
+        "candidate": f"{candidate.stats['calmar']:.2f}",
+        "reference": f"{reference.stats['calmar']:.2f}",
+        "delta": f"{candidate.stats['calmar'] - reference.stats['calmar']:.2f}",
     }]
     if not candidate.standard.empty and not reference.standard.empty:
         rows.extend([{
-            "metric": "standard_median_excess_pct",
+            "metric": "median_excess_pct",
             "candidate": fmt_pp(candidate.standard["excess_return_pct"].median()),
             "reference": fmt_pp(reference.standard["excess_return_pct"].median()),
             "delta": fmt_pp(candidate.standard["excess_return_pct"].median() - reference.standard["excess_return_pct"].median()),
         }, {
-            "metric": "standard_worst_excess_pct",
+            "metric": "worst_excess_pct",
             "candidate": fmt_pp(candidate.standard["excess_return_pct"].min()),
             "reference": fmt_pp(reference.standard["excess_return_pct"].min()),
             "delta": fmt_pp(candidate.standard["excess_return_pct"].min() - reference.standard["excess_return_pct"].min()),
         }])
     return table_section("相对参考版本变化", pd.DataFrame(rows))
+
+
+def risk_adjusted_section(review: dict[str, Any]) -> str:
+    summary = review["summary"]
+    rows = pd.DataFrame([{
+        "metric": "cagr_pct",
+        "candidate": fmt_pct(summary["cagr_pct"]),
+        "reference": fmt_pct(summary["buyhold_cagr_pct"]),
+    }, {
+        "metric": "sharpe",
+        "candidate": f"{summary['sharpe']:.2f}",
+        "reference": f"{summary['buyhold_sharpe']:.2f}",
+    }, {
+        "metric": "sortino",
+        "candidate": f"{summary['sortino']:.2f}",
+        "reference": f"{summary['buyhold_sortino']:.2f}",
+    }, {
+        "metric": "calmar",
+        "candidate": f"{summary['calmar']:.2f}",
+        "reference": f"{summary['buyhold_calmar']:.2f}",
+    }])
+    return table_section("风险调整指标：策略 vs 买入持有", rows)
 
 
 def table_section(title: str, df: pd.DataFrame) -> str:
@@ -540,7 +827,7 @@ def df_to_html(df: pd.DataFrame) -> str:
 def format_value(value: Any, col: str) -> str:
     if pd.isna(value):
         return ""
-    if col in {"window_start", "window_end", "window_days", "step_days"}:
+    if col in {"window_start", "window_end", "window_days", "step_days", "underwater_days", "windows"}:
         try:
             return str(int(value))
         except (TypeError, ValueError):
@@ -556,11 +843,11 @@ def format_value(value: Any, col: str) -> str:
 
 def scoring_policy_section() -> str:
     rows = pd.DataFrame([
-        {"component": "long_term_excess", "weight": 25, "purpose": "全周期超额、单币覆盖度、最弱单币超额"},
-        {"component": "rolling_stability", "weight": 30, "purpose": "滚动中位超额、胜率、最差超额、单币中位超额"},
-        {"component": "risk_control", "weight": 25, "purpose": "组合、单币、滚动窗口的最大回撤纪律"},
-        {"component": "trade_quality", "weight": 10, "purpose": "交易频率和平均仓位是否合理"},
-        {"component": "logic_consistency", "weight": 10, "purpose": "人工判断规则是否符合长线策略哲学"},
+        {"component": "return_score", "weight": 25, "purpose": "全周期超额、相对买入持有收益、单币覆盖、最弱单币、CAGR 相对表现"},
+        {"component": "robustness_score", "weight": 25, "purpose": "滚动中位超额、滚动胜率、最差滚动超额、单币滚动中位表现"},
+        {"component": "risk_score", "weight": 20, "purpose": "绝对回撤、单币回撤、滚动回撤、水下天数、相对买入持有风险"},
+        {"component": "risk_adjusted_score", "weight": 20, "purpose": "Sharpe、Sortino、Calmar 的绝对表现与相对买入持有表现"},
+        {"component": "behavior_score", "weight": 10, "purpose": "交易频率、平均仓位、三币交易次数是否均衡"},
     ])
     return table_section("评分规则", rows)
 
@@ -569,9 +856,13 @@ def timerange_years(timerange: str) -> float:
     if "-" not in timerange:
         return 1.0
     start, end = timerange.split("-", 1)
-    start_ts = pd.Timestamp(start, tz="UTC")
-    end_ts = pd.Timestamp(end, tz="UTC")
+    start_ts = parse_date(start)
+    end_ts = parse_date(end)
     return max((end_ts - start_ts).days / 365.25, 0.1)
+
+
+def parse_date(value: str) -> pd.Timestamp:
+    return pd.to_datetime(value, format="%Y%m%d")
 
 
 def delta_detail(candidate: float, reference: float, unit: str) -> str:
@@ -579,11 +870,11 @@ def delta_detail(candidate: float, reference: float, unit: str) -> str:
 
 
 def fmt_pct(value: Any) -> str:
-    return "" if value is None else f"{float(value):.2f}%"
+    return "" if value is None else f"{num(value):.2f}%"
 
 
 def fmt_pp(value: Any) -> str:
-    return "" if value is None else f"{float(value):.2f} pp"
+    return "" if value is None else f"{num(value):.2f} pp"
 
 
 def label(value: str) -> str:
@@ -593,35 +884,7 @@ def label(value: str) -> str:
 def translate_value(value: str) -> str:
     if value in VALUE_LABELS:
         return VALUE_LABELS[value]
-    replacements = {
-        "aggregate_excess": "组合超额",
-        "excess_vs_bh": "超额/BH",
-        "pair_positive": "正超额币种占比",
-        "min_pair_excess": "最弱单币超额",
-        "windows": "窗口数",
-        "median_excess": "中位超额",
-        "win_rate": "胜率",
-        "worst_excess": "最差超额",
-        "pair_medians": "单币中位超额",
-        "aggregate_dd": "组合回撤",
-        "worst_pair_dd": "最差单币回撤",
-        "worst_rolling_dd": "最差滚动回撤",
-        "trades_per_pair_year": "单币年均交易次数",
-        "mean_exposure": "平均仓位",
-        "candidate": "候选",
-        "reference": "参考",
-        "delta": "变化",
-        "percentage points": "百分点",
-        "manual review score": "人工逻辑评分",
-    }
-    out = value
-    for src, dst in replacements.items():
-        out = out.replace(src, dst)
-    return out
-
-
-def clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, float(value)))
+    return value
 
 
 def esc(value: Any) -> str:

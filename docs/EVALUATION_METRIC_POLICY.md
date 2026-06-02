@@ -40,46 +40,76 @@ BTC/ETH/BNB sleeves. Do not judge a candidate from the aggregate alone.
 Use `scripts/review_freqtrade_eval.py` after a serious candidate has baseline
 and rolling results.
 
-The decision score is intentionally simple and reviewable:
+The score is a numeric summary, not a promotion shortcut. Promotion still
+requires the hard checks below to pass. Every sub-score is clamped to `[0, 100]`;
+values better than the full-score target are capped at `100`, and values worse
+than the fail target are floored at `0`.
 
 | Component | Weight | Purpose |
 | --- | ---: | --- |
-| `long_term_excess` | 25 | Full-period excess, pair coverage, weakest pair excess |
-| `rolling_stability` | 30 | Rolling median excess, win rate, worst excess, pair medians |
-| `risk_control` | 25 | Aggregate, pair, and rolling max drawdown discipline |
-| `trade_quality` | 10 | Trade frequency and average exposure sanity |
-| `logic_consistency` | 10 | Manual review of whether the rule fits the long-term strategy philosophy |
+| `return_score` | 25 | Full-period excess, relative Buy & Hold return, pair coverage, weakest pair, CAGR |
+| `robustness_score` | 25 | Rolling median excess, rolling win rate, worst rolling excess, pair medians |
+| `risk_score` | 20 | Absolute drawdown, per-pair drawdown, rolling drawdown, underwater days, relative risk |
+| `risk_adjusted_score` | 20 | Sharpe, Sortino, Calmar versus absolute targets and Buy & Hold |
+| `behavior_score` | 10 | Trade frequency, average exposure, per-pair trade balance |
 
-The score is not a substitute for the promotion rules below. It is a compact
-summary used to prioritize review. A candidate still fails if a critical
-promotion check fails.
+Manual logic review is no longer part of the numeric score. It is handled as two
+hard checks:
+
+- rule generality: the rule must not contain symbol-specific thresholds or fit
+  only one historical segment;
+- defense integrity: BEAR exits, trend-break exits, and risk-reduce exits must
+  not be weakened without explicit evidence.
 
 Component formulas in `scripts/review_freqtrade_eval.py`:
 
-- `long_term_excess`
-  - `aggregate_score = clamp((aggregate_excess / max(abs(aggregate_bh), 100)) / 0.50 * 100)`
+- `return_score`
+  - `excess_score = linear_score(aggregate_excess_pp, fail=-50, full=200)`
+  - if Buy & Hold return is positive:
+    `relative_score = linear_score(strategy_return / buyhold_return, fail=0.80, full=1.20)`
+  - if Buy & Hold return is not positive:
+    `relative_score = linear_score(aggregate_excess_pp, fail=0, full=100)`
   - `pair_positive = percent of BTC/ETH/BNB with positive full-period excess`
-  - `min_pair_score = clamp(min_pair_excess / 100 * 100)`
-  - final: `0.55 * aggregate_score + 0.25 * pair_positive + 0.20 * min_pair_score`
-- `rolling_stability`
-  - `median_score = clamp((rolling_median_excess + 50) / 50 * 100)`
-  - `win_score = clamp(rolling_win_rate / 55 * 100)`
-  - `worst_score = clamp((worst_rolling_excess + 300) / 300 * 100)`
-  - `pair_score = mean(clamp((pair_median_excess + 40) / 60 * 100))`
+  - `weakest_pair_score = linear_score(min_pair_excess_pp, fail=-50, full=100)`
+  - if Buy & Hold CAGR is positive:
+    `cagr_score = linear_score(strategy_cagr / buyhold_cagr, fail=0.80, full=1.20)`
+  - if Buy & Hold CAGR is not positive:
+    `cagr_score = linear_score(strategy_cagr - buyhold_cagr, fail=0, full=30pp)`
+  - final: `0.30 * excess_score + 0.25 * relative_score + 0.20 * pair_positive + 0.15 * weakest_pair_score + 0.10 * cagr_score`
+- `robustness_score`
+  - `median_score = linear_score(rolling_median_excess_pp, fail=-40, full=10)`
+  - `win_score = linear_score(rolling_win_rate_pct, fail=35, full=55)`
+  - `worst_score = linear_score(worst_rolling_excess_pp, fail=-300, full=-100)`
+  - `pair_score = mean(linear_score(pair_median_excess_pp, fail=-40, full=10))`
   - final: `0.35 * median_score + 0.25 * win_score + 0.25 * worst_score + 0.15 * pair_score`
-- `risk_control`
-  - `dd_score = clamp((75 - abs(aggregate_dd)) / 35 * 100)`
-  - `pair_score = clamp((75 - abs(worst_pair_dd)) / 35 * 100)`
-  - `rolling_score = clamp((75 - abs(worst_rolling_dd)) / 35 * 100)`
-  - final: `0.45 * dd_score + 0.30 * pair_score + 0.25 * rolling_score`
-- `trade_quality`
-  - full score if each pair averages `1` to `12` trades per year
-  - otherwise penalize distance from about `8` trades per pair per year
-  - exposure score penalizes distance from `60%` average exposure
-  - final: `0.65 * trade_score + 0.35 * exposure_score`
-- `logic_consistency`
-  - manual score, default `85`, for whether the rule is coherent before seeing
-    the backtest result.
+- `risk_score`
+  - aggregate drawdown full target: `<= 40%`; fail target: `>= 70%`
+  - worst single-pair drawdown full target: `<= 45%`; fail target: `>= 75%`
+  - worst rolling drawdown full target: `<= 45%`; fail target: `>= 75%`
+  - underwater days full target: `<= 500`; fail target: `>= 1200`
+  - relative drawdown full target: `strategy_dd / buyhold_dd <= 0.60`; fail target: `>= 1.00`
+  - relative underwater full target: `strategy_underwater / buyhold_underwater <= 0.70`; fail target: `>= 1.20`
+  - final: `0.30 * aggregate_dd + 0.20 * pair_dd + 0.20 * rolling_dd + 0.15 * underwater + 0.15 * relative_risk`
+- `risk_adjusted_score`
+  - absolute targets for this long-only spot strategy:
+    - Calmar: fail `0.0`, full `1.20`
+    - Sortino: fail `0.0`, full `1.80`
+    - Sharpe: fail `0.0`, full `1.20`
+  - relative targets versus Buy & Hold:
+    - fail if the ratio is `0.80`
+    - full score if the ratio is `1.20`
+  - final: `0.60 * absolute_risk_adjusted + 0.40 * relative_to_buyhold`
+- `behavior_score`
+  - trade frequency full score: `1` to `12` trades per pair per year
+  - if below `1`, linearly score from `0` to `1`
+  - if above `12`, linearly decay to zero at `20`
+  - exposure full score: `50%` to `70%`, linearly decays to zero at `35%` and `85%`
+  - per-pair trade balance full score: max/min trade count `<= 2`; fail at `>= 4`
+  - final: `0.45 * trade_frequency + 0.35 * exposure + 0.20 * trade_balance`
+
+`linear_score(value, fail, full)` means a linear score from `0` at `fail` to
+`100` at `full`, clamped to `[0, 100]`. For lower-is-better metrics, the
+direction is reversed with the same clamp.
 
 `excess_return_pct` is measured in percentage points:
 
