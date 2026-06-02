@@ -90,6 +90,7 @@ def main() -> None:
         json.dumps(rows, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    (output_dir / "report.md").write_text(render_markdown_report(args, rows), encoding="utf-8")
     print(summary.to_string(index=False))
     print(f"\nWrote {output_dir}")
 
@@ -109,6 +110,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="results/freqtrade_eval")
     parser.add_argument("--run-id", default="")
     parser.add_argument("--no-run", action="store_true", help="Parse latest zip files in the output directory.")
+    parser.add_argument("--verbose", action="store_true", help="Print full Freqtrade output instead of writing it to backtest.log.")
     return parser.parse_args()
 
 
@@ -151,7 +153,22 @@ def run_backtest(
         *pairs,
     ]
     print("Running:", " ".join(cmd))
-    subprocess.run(cmd, cwd=PROJECT_ROOT, check=True)
+    (run_dir / "command.txt").write_text(" ".join(cmd), encoding="utf-8")
+    if args.verbose:
+        subprocess.run(cmd, cwd=PROJECT_ROOT, check=True)
+    else:
+        log_path = run_dir / "backtest.log"
+        with log_path.open("w", encoding="utf-8") as log_file:
+            completed = subprocess.run(
+                cmd,
+                cwd=PROJECT_ROOT,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        if completed.returncode != 0:
+            print_log_tail(log_path)
+            raise subprocess.CalledProcessError(completed.returncode, cmd)
     return BacktestRun(mode=mode, pair=pair, wallet=wallet, directory=run_dir, result_zip=latest_result_zip(run_dir))
 
 
@@ -464,6 +481,74 @@ def json_safe_rows(rows: list[dict]) -> list[dict]:
                 out[key] = value
         safe.append(out)
     return safe
+
+
+def print_log_tail(path: Path, lines: int = 80) -> None:
+    if not path.exists():
+        return
+    content = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    print(f"\nLast {min(lines, len(content))} lines from {path}:")
+    for line in content[-lines:]:
+        print(line)
+
+
+def render_markdown_report(args: argparse.Namespace, rows: list[dict]) -> str:
+    lines = [
+        "# Freqtrade Evaluation Report",
+        "",
+        f"- Strategy: `{args.strategy}`",
+        f"- Timerange: `{args.timerange}`",
+        f"- Report window: `{args.report_window}`",
+        f"- Pairs: `{', '.join(args.pairs)}`",
+        f"- Allocation: `{', '.join(f'{item:g}' for item in args.allocation)}`",
+        "",
+        "## Summary",
+        "",
+        "| Mode | Pair | Total | Buy&Hold | Excess | Max DD | Avg Exposure | Window | Window BH | Window Excess | Window DD | Trades |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in rows:
+        lines.append(
+            "| {mode} | {pair} | {total_return_pct} | {buyhold_total_return_pct} | "
+            "{total_excess_pct} | {max_drawdown_pct} | {avg_exposure_pct} | "
+            "{window_return_pct} | {window_buyhold_return_pct} | {window_excess_pct} | "
+            "{window_max_drawdown_pct} | {trade_count} |".format(
+                mode=row["mode"],
+                pair=row["pair"],
+                total_return_pct=fmt_pct(row.get("total_return_pct")),
+                buyhold_total_return_pct=fmt_pct(row.get("buyhold_total_return_pct")),
+                total_excess_pct=fmt_pct(row.get("total_excess_pct")),
+                max_drawdown_pct=fmt_pct(row.get("max_drawdown_pct")),
+                avg_exposure_pct=fmt_pct(row.get("avg_exposure_pct")),
+                window_return_pct=fmt_pct(row.get("window_return_pct")),
+                window_buyhold_return_pct=fmt_pct(row.get("window_buyhold_return_pct")),
+                window_excess_pct=fmt_pct(row.get("window_excess_pct")),
+                window_max_drawdown_pct=fmt_pct(row.get("window_max_drawdown_pct")),
+                trade_count="" if row.get("trade_count") is None else f"{row['trade_count']:.0f}",
+            )
+        )
+    lines.extend([
+        "",
+        "## Files",
+        "",
+        "- `summary.csv`: compact decision metrics",
+        "- `summary.json`: machine-readable summary",
+        "- `trades.csv`: trade-level diagnostics",
+        "- `single_fixed_portfolio_equity.csv`: fixed-allocation aggregate equity curve",
+        "- `backtest.log`: raw Freqtrade output in each run directory",
+    ])
+    return "\n".join(lines) + "\n"
+
+
+def fmt_pct(value: object) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+        return f"{float(value):.2f}%"
+    except (TypeError, ValueError):
+        return ""
 
 
 if __name__ == "__main__":
