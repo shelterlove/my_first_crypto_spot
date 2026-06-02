@@ -4,12 +4,12 @@
 
 Current reference:
 
-- Native strategy: `v2_20D`
-- Freqtrade strategy: `CryptoSpotV220D`
-- Baseline run: `results/freqtrade_eval/baseline_v2_20D_20260602`
-- Quick rolling run: `results/freqtrade_eval/rolling_v2_20D_quick_20260602`
-- Standard rolling run: `results/freqtrade_eval/rolling_v2_20D_standard_20260602`
-- Review report: `results/freqtrade_eval/baseline_v2_20D_20260602/review/report.html`
+- Native strategy: `v2_21E`
+- Freqtrade strategy: `CryptoSpotV221E`
+- Baseline run: `results/freqtrade_eval/baseline_v2_21E_20260602`
+- Quick rolling run: `results/freqtrade_eval/rolling_v2_21E_quick_20260602`
+- Standard rolling run: `results/freqtrade_eval/rolling_v2_21E_standard_20260602`
+- Review report: `results/freqtrade_eval/baseline_v2_21E_20260602/review/report.html`
 
 The older `baseline_v2_19B_full_20260602` and
 `rolling_v2_19B_standard_20260602` runs were produced before the Freqtrade
@@ -19,37 +19,37 @@ position-adjustment fix. Do not use them for strategy promotion decisions.
 
 Full-period fixed-allocation aggregate:
 
-- strategy return: `2476.72%`
+- strategy return: `2563.56%`
 - Buy & Hold return: `1307.29%`
-- excess return: `1169.43%`
+- excess return: `1256.27%`
 - max drawdown: `-53.85%`
-- average exposure: `60.96%`
+- average exposure: `60.81%`
 
 Quick rolling aggregate:
 
 - windows: `11`
-- mean excess: `3.03%`
+- mean excess: `3.69%`
 - median excess: `-2.19%`
 - win rate: `45.45%`
-- worst excess: `-104.05%`
+- worst excess: `-103.41%`
 
 Standard rolling aggregate:
 
 - windows: `43`
-- mean excess: `41.44%`
-- median excess: `-1.89%`
+- mean excess: `42.90%`
+- median excess: `-1.93%`
 - win rate: `48.84%`
-- worst excess: `-246.76%`
+- worst excess: `-245.92%`
 
 Decision score:
 
-- score: `80.82`
+- score: `80.93`
 - grade: `B+`
 - decision: `promote_reference`
-- CAGR: `74.94%` versus Buy & Hold `57.64%`
-- Sharpe: `1.28` versus Buy & Hold `1.01`
-- Sortino: `1.51` versus Buy & Hold `1.35`
-- Calmar: `1.39` versus Buy & Hold `0.79`
+- CAGR: `75.94%` versus Buy & Hold `57.64%`
+- Sharpe: `1.29` versus Buy & Hold `1.01`
+- Sortino: `1.52` versus Buy & Hold `1.35`
+- Calmar: `1.41` versus Buy & Hold `0.79`
 
 The strategy remains strong over the full period and is more stable than
 `v2_19B`, but the rolling profile still shows weakness in 2023-2025 recovery
@@ -70,9 +70,9 @@ Repeated pattern:
 
 This is visible in the worst quick-rolling windows:
 
-- `20221216-20231216`: aggregate excess `-65.43%`
-- `20230614-20240613`: aggregate excess `-104.05%`
-- `20231211-20241210`: aggregate excess `-47.64%`
+- `20221216-20231216`: aggregate excess `-65.49%`
+- `20230614-20240613`: aggregate excess `-103.41%`
+- `20231211-20241210`: aggregate excess `-46.97%`
 
 Target-reduce exits are the most frequent exit type in these windows. Windows
 with high target-reduce activity have materially weaker median excess.
@@ -150,6 +150,42 @@ Validation versus fixed-adjustment `v2_19B`:
 The improvement is mostly from BNB windows, while BTC and ETH show only small
 mean-excess declines and no worse median or worst rolling excess. The rule is
 asset-general and logically tied to market structure, so this is acceptable.
+
+## Promoted Candidate: v2_21E
+
+`v2_21E` is a narrow follow-up to `v2_20D`. It does not change target tables,
+BEAR exits, `risk-reduce`, or `trend-break`. It only addresses one observed
+failure mode: structural recovery buys that are immediately unwound by routine
+`target-reduce` sells.
+
+The added rules are:
+
+- in constructive `MIXED`, use the existing recovery-override buy path when
+  price is above EMA24 and EMA168, EMA72 remains above EMA168, EMA168 slope is
+  positive, ROC5 is positive, and BTC regime is not BEAR;
+- after a `safe-recovery` buy, delay routine `target-reduce` for 2 calls if
+  structure remains constructive and risk is not above 3;
+- `risk-reduce`, `trend-break`, and BEAR exits are never blocked by this grace
+  period.
+
+Validation versus `v2_20D`:
+
+| evaluation | `v2_20D` | `v2_21E` |
+| --- | ---: | ---: |
+| full excess | `1169.43 pp` | `1256.27 pp` |
+| full max drawdown | `-53.85%` | `-53.85%` |
+| score | `80.82` | `80.93` |
+| quick mean excess | `3.03 pp` | `3.69 pp` |
+| quick worst excess | `-104.05 pp` | `-103.41 pp` |
+| standard mean excess | `41.44 pp` | `42.90 pp` |
+| standard median excess | `-1.89 pp` | `-1.93 pp` |
+| standard win rate | `48.84%` | `48.84%` |
+| standard worst excess | `-246.76 pp` | `-245.92 pp` |
+
+This is a small improvement, not a new regime. The main bottleneck remains
+slow-uptrend participation in 2023-2025 windows. `v2_21E` is acceptable as the
+new reference because it improves full-period return and worst rolling excess
+without weakening the defensive exits.
 
 ## Candidate Plan
 

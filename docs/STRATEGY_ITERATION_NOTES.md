@@ -2,8 +2,8 @@
 
 ## Current Reference
 
-The current reference candidate is `v2_20D`, deployed through the thin
-Freqtrade shell `CryptoSpotV220D`.
+The current reference candidate is `v2_21E`, deployed through the thin
+Freqtrade shell `CryptoSpotV221E`.
 
 ## Core Diagnosis
 
@@ -45,5 +45,29 @@ Findings:
   sells (`v2_20D`) improved full-period and rolling stability without worsening
   worst rolling excess or max drawdown.
 
-`v2_20D` is now the reference. The remaining bottleneck is still 2023-2025
-recovery and slow-uptrend participation, not BEAR defense.
+## 2026-06-03 Structural Recovery Iteration
+
+`v2_21E` keeps `v2_20D` sell defense intact and adds two narrow recovery rules:
+
+- structural MIXED recovery can use the existing recovery-override buy path
+  when price is above EMA24 and EMA168, EMA72 remains above EMA168, EMA168 slope
+  is positive, ROC5 is positive, and BTC regime is not BEAR;
+- after such a `safe-recovery` buy, routine `target-reduce` sells get a 2-bar
+  grace period. `risk-reduce`, `trend-break`, and BEAR exits are unchanged.
+
+Validation versus `v2_20D`:
+
+| metric | `v2_20D` | `v2_21E` |
+| --- | ---: | ---: |
+| full excess | `1169.43 pp` | `1256.27 pp` |
+| score | `80.82` | `80.93` |
+| standard mean excess | `41.44 pp` | `42.90 pp` |
+| standard median excess | `-1.89 pp` | `-1.93 pp` |
+| standard win rate | `48.84%` | `48.84%` |
+| standard worst excess | `-246.76 pp` | `-245.92 pp` |
+| max drawdown | `-53.85%` | `-53.85%` |
+
+This is a small improvement, not a structural breakthrough. `v2_21E` is the
+reference because it improves full-period and mean rolling performance without
+materially weakening drawdown or worst-window behavior. The remaining bottleneck
+is still 2023-2025 recovery and slow-uptrend participation, not BEAR defense.

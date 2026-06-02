@@ -2,8 +2,8 @@
 
 ## Current Candidate
 
-- Native strategy: `v2_20D`
-- Freqtrade strategy: `CryptoSpotV220D`
+- Native strategy: `v2_21E`
+- Freqtrade strategy: `CryptoSpotV221E`
 - Evaluation model: fixed allocation per pair plus equal-weight aggregate
 - Status: reference candidate passed fixed-allocation baseline plus quick and
   standard rolling review; paper trading still requires live signal audit.

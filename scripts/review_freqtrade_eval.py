@@ -133,10 +133,10 @@ def main() -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--strategy", default="v2_20D")
-    parser.add_argument("--baseline-dir", default=str(DEFAULT_BASE / "baseline_v2_20D_20260602"))
-    parser.add_argument("--quick-dir", default=str(DEFAULT_BASE / "rolling_v2_20D_quick_20260602"))
-    parser.add_argument("--standard-dir", default=str(DEFAULT_BASE / "rolling_v2_20D_standard_20260602"))
+    parser.add_argument("--strategy", default="v2_21E")
+    parser.add_argument("--baseline-dir", default=str(DEFAULT_BASE / "baseline_v2_21E_20260602"))
+    parser.add_argument("--quick-dir", default=str(DEFAULT_BASE / "rolling_v2_21E_quick_20260602"))
+    parser.add_argument("--standard-dir", default=str(DEFAULT_BASE / "rolling_v2_21E_standard_20260602"))
     parser.add_argument("--reference-baseline-dir", default="")
     parser.add_argument("--reference-quick-dir", default="")
     parser.add_argument("--reference-standard-dir", default="")

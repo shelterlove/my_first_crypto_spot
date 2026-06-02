@@ -2439,3 +2439,138 @@ class V220DStrategy(V219BStrategy):
         ):
             return False
         return bool(price > ema24 and roc_5 > 0 and ema72 > ema168 and ema168_slope >= 0)
+
+
+class V221EStrategy(V220DStrategy):
+    """V2.21E: short target-reduce grace period after structural recovery buys."""
+
+    VERSION_LABEL = "v2_21E"
+    STRUCTURAL_RECOVERY_MAX_RISK = 3
+    RECOVERY_BUY_GRACE_CALLS = 2
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._last_recovery_buy_call = -10_000
+
+    @property
+    def name(self) -> str:
+        return "v2_21E"
+
+    def _is_recovery_override_setup(
+        self,
+        df: pd.DataFrame,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        risk_score: int,
+    ) -> bool:
+        if super()._is_recovery_override_setup(
+            df=df,
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            risk_score=risk_score,
+        ):
+            return True
+        if risk_score > self.STRUCTURAL_RECOVERY_MAX_RISK or trend_risk > 2:
+            return False
+        return self._is_structural_recovery_override(latest, price, raw_state, confirmed_state)
+
+    def compute_actions(self, candles_by_symbol, portfolio, current_prices):
+        actions = super().compute_actions(candles_by_symbol, portfolio, current_prices)
+        if actions:
+            action = actions[0]
+            reason = str(getattr(action, "reason", ""))
+            if action.side == "buy" and "safe-recovery" in reason:
+                self._last_recovery_buy_call = self._call_count
+        return actions
+
+    def _adjust_sell_execution(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        drawdown_risk: int,
+        risk_score: int,
+        sell_setup: str,
+        sell_threshold: float,
+        max_sell: float,
+    ) -> tuple[float, float, str]:
+        threshold, adjusted_max_sell, guard = super()._adjust_sell_execution(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            drawdown_risk=drawdown_risk,
+            risk_score=risk_score,
+            sell_setup=sell_setup,
+            sell_threshold=sell_threshold,
+            max_sell=max_sell,
+        )
+        if not self._is_recovery_buy_grace_target_reduce(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            risk_score=risk_score,
+            sell_setup=sell_setup,
+        ):
+            return threshold, adjusted_max_sell, guard
+        return (
+            threshold,
+            0.0,
+            self._join_guard(guard, f"{self.VERSION_LABEL}_post_recovery_target_reduce_grace"),
+        )
+
+    def _is_recovery_buy_grace_target_reduce(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        risk_score: int,
+        sell_setup: str,
+    ) -> bool:
+        if sell_setup != "target-reduce":
+            return False
+        if self._call_count - self._last_recovery_buy_call > self.RECOVERY_BUY_GRACE_CALLS:
+            return False
+        if risk_score > 3 or trend_risk > 2:
+            return False
+        return self._is_structural_recovery_override(latest, price, raw_state, confirmed_state)
+
+    @staticmethod
+    def _is_structural_recovery_override(
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+    ) -> bool:
+        if raw_state != "MIXED" or confirmed_state != "MIXED" or price <= 0:
+            return False
+        if str(latest.get("btc_regime", "")) == "BEAR":
+            return False
+
+        ema24 = latest.get("ema24")
+        ema72 = latest.get("ema72")
+        ema168 = latest.get("ema168")
+        ema168_slope = latest.get("ema168_slope")
+        roc_5 = latest.get("roc_5")
+        if (
+            pd.isna(ema24)
+            or pd.isna(ema72)
+            or pd.isna(ema168)
+            or pd.isna(ema168_slope)
+            or pd.isna(roc_5)
+        ):
+            return False
+        return bool(price > ema24 and price > ema168 and roc_5 > 0 and ema72 > ema168 and ema168_slope > 0)
