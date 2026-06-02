@@ -32,6 +32,38 @@ Primary metrics:
 - average exposure;
 - trade count.
 
+Primary reports must show both the equal-weight aggregate and the individual
+BTC/ETH/BNB sleeves. Do not judge a candidate from the aggregate alone.
+
+### Decision Score
+
+Use `scripts/review_freqtrade_eval.py` after a serious candidate has baseline
+and rolling results.
+
+The decision score is intentionally simple and reviewable:
+
+| Component | Weight | Purpose |
+| --- | ---: | --- |
+| `long_term_excess` | 25 | Full-period excess, pair coverage, weakest pair excess |
+| `rolling_stability` | 30 | Rolling median excess, win rate, worst excess, pair medians |
+| `risk_control` | 25 | Aggregate, pair, and rolling max drawdown discipline |
+| `trade_quality` | 10 | Trade frequency and average exposure sanity |
+| `logic_consistency` | 10 | Manual review of whether the rule fits the long-term strategy philosophy |
+
+The score is not a substitute for the promotion rules below. It is a compact
+summary used to prioritize review. A candidate still fails if a critical
+promotion check fails.
+
+`excess_return_pct` is measured in percentage points:
+
+```text
+strategy_return_pct - buy_hold_return_pct
+```
+
+Therefore a worst excess below `-100` means the strategy lagged Buy & Hold by
+more than 100 percentage points. It does not mean the strategy lost more than
+100%.
+
 ### 2. Risk Evaluation
 
 Risk evaluation checks that improved return is not coming from unacceptable
@@ -125,6 +157,9 @@ Keep in primary reports:
 - `trades.csv` for full-period runs;
 - `rolling_summary.csv` and `rolling_detail.csv` for rolling runs;
 - aggregate equity curve.
+- `review/score.json`, `review/score_components.csv`,
+  `review/promotion_checks.csv`, and `review/report.html` for promoted
+  candidates or serious contenders.
 
 Exclude from primary reports:
 

@@ -9,6 +9,7 @@ Current reference:
 - Baseline run: `results/freqtrade_eval/baseline_v2_20D_20260602`
 - Quick rolling run: `results/freqtrade_eval/rolling_v2_20D_quick_20260602`
 - Standard rolling run: `results/freqtrade_eval/rolling_v2_20D_standard_20260602`
+- Review report: `results/freqtrade_eval/baseline_v2_20D_20260602/review/report.html`
 
 The older `baseline_v2_19B_full_20260602` and
 `rolling_v2_19B_standard_20260602` runs were produced before the Freqtrade
@@ -39,6 +40,12 @@ Standard rolling aggregate:
 - median excess: `-1.89%`
 - win rate: `48.84%`
 - worst excess: `-246.76%`
+
+Decision score:
+
+- score: `77.68`
+- grade: `B+`
+- decision: `promote_reference`
 
 The strategy remains strong over the full period and is more stable than
 `v2_19B`, but the rolling profile still shows weakness in 2023-2025 recovery

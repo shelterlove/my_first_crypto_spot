@@ -2,11 +2,11 @@
 
 ## Current Candidate
 
-- Native strategy: `v2_19B`
-- Freqtrade strategy: `CryptoSpotV219B`
+- Native strategy: `v2_20D`
+- Freqtrade strategy: `CryptoSpotV220D`
 - Evaluation model: fixed allocation per pair plus equal-weight aggregate
-- Status: infrastructure can be dry-run tested; strategy promotion still depends
-  on rolling-window stability and live signal audit.
+- Status: reference candidate passed fixed-allocation baseline plus quick and
+  standard rolling review; paper trading still requires live signal audit.
 
 ## Readiness Gates
 
@@ -16,6 +16,8 @@ A candidate is suitable for paper trading when it passes these checks:
 - Fixed-allocation per-pair reports are available for BTC, ETH, and BNB.
 - Aggregate return, excess return, win rate, drawdown, exposure, and trade count
   are reviewed over full-period and rolling-window runs.
+- `review/report.html`, `score.json`, and promotion checks are generated and
+  archived for the candidate.
 - No unexplained divergence exists between native strategy state and Freqtrade
   entry/exit behavior.
 - Recent-window behavior is explainable from trade logs, especially losing
