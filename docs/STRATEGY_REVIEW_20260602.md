@@ -4,10 +4,11 @@
 
 Current reference:
 
-- Native strategy: `v2_19B`
-- Freqtrade strategy: `CryptoSpotV219B`
-- Baseline run: `results/freqtrade_eval/baseline_v2_19B_fixed_adj_20260602`
-- Quick rolling run: `results/freqtrade_eval/rolling_v2_19B_fixed_adj_quick_20260602`
+- Native strategy: `v2_20D`
+- Freqtrade strategy: `CryptoSpotV220D`
+- Baseline run: `results/freqtrade_eval/baseline_v2_20D_20260602`
+- Quick rolling run: `results/freqtrade_eval/rolling_v2_20D_quick_20260602`
+- Standard rolling run: `results/freqtrade_eval/rolling_v2_20D_standard_20260602`
 
 The older `baseline_v2_19B_full_20260602` and
 `rolling_v2_19B_standard_20260602` runs were produced before the Freqtrade
@@ -17,22 +18,31 @@ position-adjustment fix. Do not use them for strategy promotion decisions.
 
 Full-period fixed-allocation aggregate:
 
-- strategy return: `2241.39%`
+- strategy return: `2476.72%`
 - Buy & Hold return: `1307.29%`
-- excess return: `934.11%`
+- excess return: `1169.43%`
 - max drawdown: `-53.85%`
-- average exposure: `60.93%`
+- average exposure: `60.96%`
 
 Quick rolling aggregate:
 
 - windows: `11`
-- mean excess: `-2.16%`
-- median excess: `-11.14%`
-- win rate: `36.36%`
+- mean excess: `3.03%`
+- median excess: `-2.19%`
+- win rate: `45.45%`
 - worst excess: `-104.05%`
 
-The strategy is strong over the full period, but the rolling profile is not yet
-stable enough to treat the framework as finished.
+Standard rolling aggregate:
+
+- windows: `43`
+- mean excess: `41.44%`
+- median excess: `-1.89%`
+- win rate: `48.84%`
+- worst excess: `-246.76%`
+
+The strategy remains strong over the full period and is more stable than
+`v2_19B`, but the rolling profile still shows weakness in 2023-2025 recovery
+and slow-uptrend windows.
 
 ## Main Problem
 
@@ -91,11 +101,47 @@ Conclusion: broad target-reduce suppression is too blunt. It slightly improves a
 few later choppy windows, but it damages the core job of the strategy: staying
 invested through long uptrends.
 
+## Promoted Candidate: v2_20D
+
+`v2_20D` adds a narrow delay-only confirmation for constructive low-risk
+`target-reduce` sells. It does not change `trend-break`, `risk-reduce`, BEAR
+exits, target tables, buy sizing, or asset-specific behavior.
+
+The delay applies only when all of these are true:
+
+- `sell_setup == "target-reduce"`;
+- raw and confirmed state are both `MIXED`;
+- `trend_risk <= 1` and `risk_score <= 2`;
+- BTC regime is not `BEAR`;
+- price is above EMA24;
+- ROC5 is positive;
+- `ema72 > ema168` and `ema168_slope >= 0`.
+
+The sell is delayed for two strategy calls. If the constructive condition
+persists, the sell is allowed. If risk worsens or the constructive condition
+breaks, normal sell handling resumes.
+
+Validation versus fixed-adjustment `v2_19B`:
+
+| evaluation | `v2_19B` | `v2_20D` |
+| --- | ---: | ---: |
+| full excess | `934.11%` | `1169.43%` |
+| full max drawdown | `-53.85%` | `-53.85%` |
+| quick median excess | `-11.14%` | `-2.19%` |
+| quick win rate | `36.36%` | `45.45%` |
+| quick worst excess | `-104.05%` | `-104.05%` |
+| standard median excess | `-8.12%` | `-1.89%` |
+| standard win rate | `44.19%` | `48.84%` |
+| standard worst excess | `-246.76%` | `-246.76%` |
+
+The improvement is mostly from BNB windows, while BTC and ETH show only small
+mean-excess declines and no worse median or worst rolling excess. The rule is
+asset-general and logically tied to market structure, so this is acceptable.
+
 ## Candidate Plan
 
-The next candidate should avoid broad sell suppression. It should either be a
-diagnostic pass or a narrow behavior change that only affects re-entry after a
-valid trim.
+The next candidate should focus on the remaining 2023-2025 recovery weakness,
+not on broad sell suppression.
 
 Design target:
 

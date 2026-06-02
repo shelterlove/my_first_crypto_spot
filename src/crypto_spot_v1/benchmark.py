@@ -41,6 +41,7 @@ from .strategy_candidates import (
     V212CStrategy,
     V219BStrategy,
     V220AStrategy,
+    V220DStrategy,
 )
 
 
@@ -106,6 +107,7 @@ STRATEGY_CLASSES = {
     "v2_12C": V212CStrategy,
     "v2_19B": V219BStrategy,
     "v2_20A": V220AStrategy,
+    "v2_20D": V220DStrategy,
 }
 
 

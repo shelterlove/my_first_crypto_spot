@@ -176,6 +176,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="results/freqtrade_eval")
     parser.add_argument("--run-id", default="")
     parser.add_argument("--no-run", action="store_true", help="Parse latest zip files in the output directory.")
+    parser.add_argument("--reuse-existing", action="store_true", help="Reuse existing zip files and run only missing backtests.")
     parser.add_argument("--verbose", action="store_true", help="Print full Freqtrade output instead of writing it to backtest.log.")
     parser.add_argument("--rolling-windows", action="store_true", help="Run lightweight fixed-allocation rolling-window evaluation.")
     parser.add_argument("--rolling-preset", choices=sorted(ROLLING_PRESETS), default="")
@@ -197,6 +198,12 @@ def run_backtest(
     if args.no_run:
         result_zip = latest_result_zip(run_dir)
         return BacktestRun(pair=pair, wallet=wallet, directory=run_dir, result_zip=result_zip)
+    if args.reuse_existing:
+        try:
+            result_zip = latest_result_zip(run_dir)
+            return BacktestRun(pair=pair, wallet=wallet, directory=run_dir, result_zip=result_zip)
+        except FileNotFoundError:
+            pass
 
     cmd = [
         sys.executable,

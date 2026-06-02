@@ -2343,3 +2343,99 @@ class V220AStrategy(V219BStrategy):
         if pd.isna(ema72) or pd.isna(ema168) or pd.isna(ema168_slope):
             return False
         return bool(ema72 > ema168 and ema168_slope > 0)
+
+
+class V220DStrategy(V219BStrategy):
+    """V2.20D: delay only constructive low-risk target-reduce sells."""
+
+    VERSION_LABEL = "v2_20D"
+    TARGET_REDUCE_CONFIRM_CALLS = 2
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._constructive_target_reduce_streak = 0
+
+    @property
+    def name(self) -> str:
+        return "v2_20D"
+
+    def _adjust_sell_execution(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        drawdown_risk: int,
+        risk_score: int,
+        sell_setup: str,
+        sell_threshold: float,
+        max_sell: float,
+    ) -> tuple[float, float, str]:
+        threshold, adjusted_max_sell, guard = super()._adjust_sell_execution(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            drawdown_risk=drawdown_risk,
+            risk_score=risk_score,
+            sell_setup=sell_setup,
+            sell_threshold=sell_threshold,
+            max_sell=max_sell,
+        )
+        if not self._is_constructive_target_reduce_delay(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            risk_score=risk_score,
+            sell_setup=sell_setup,
+        ):
+            self._constructive_target_reduce_streak = 0
+            return threshold, adjusted_max_sell, guard
+
+        self._constructive_target_reduce_streak += 1
+        if self._constructive_target_reduce_streak <= self.TARGET_REDUCE_CONFIRM_CALLS:
+            return (
+                threshold,
+                0.0,
+                self._join_guard(guard, f"{self.VERSION_LABEL}_constructive_target_reduce_delay"),
+            )
+        return threshold, adjusted_max_sell, guard
+
+    @staticmethod
+    def _is_constructive_target_reduce_delay(
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        risk_score: int,
+        sell_setup: str,
+    ) -> bool:
+        if sell_setup != "target-reduce":
+            return False
+        if raw_state != "MIXED" or confirmed_state != "MIXED":
+            return False
+        if trend_risk > 1 or risk_score > 2:
+            return False
+        if str(latest.get("btc_regime", "")) == "BEAR":
+            return False
+
+        ema24 = latest.get("ema24")
+        ema72 = latest.get("ema72")
+        ema168 = latest.get("ema168")
+        ema168_slope = latest.get("ema168_slope")
+        roc_5 = latest.get("roc_5")
+        if (
+            price <= 0
+            or pd.isna(ema24)
+            or pd.isna(ema72)
+            or pd.isna(ema168)
+            or pd.isna(ema168_slope)
+            or pd.isna(roc_5)
+        ):
+            return False
+        return bool(price > ema24 and roc_5 > 0 and ema72 > ema168 and ema168_slope >= 0)
