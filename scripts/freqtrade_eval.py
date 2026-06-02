@@ -1,0 +1,470 @@
+#!/usr/bin/env python3
+"""Run and summarize Freqtrade backtests for fixed-allocation strategy review."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import tempfile
+import zipfile
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Iterable
+
+import pandas as pd
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_PAIRS = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
+DEFAULT_ALLOCATION = [333.0, 333.0, 334.0]
+
+
+@dataclass(frozen=True)
+class BacktestRun:
+    mode: str
+    pair: str
+    wallet: float
+    directory: Path
+    result_zip: Path
+
+
+def main() -> None:
+    args = parse_args()
+    pairs = args.pairs
+    allocation = args.allocation
+    if len(allocation) != len(pairs):
+        raise SystemExit("--allocation must have the same length as --pairs")
+
+    run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = Path(args.output_dir) / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    runs: list[BacktestRun] = []
+    if args.mode in {"single", "both"}:
+        for pair, wallet in zip(pairs, allocation):
+            run_dir = output_dir / "single" / safe_name(pair)
+            runs.append(run_backtest(args, [pair], wallet, run_dir, mode="single", pair=pair))
+
+    if args.mode in {"multi", "both"}:
+        run_dir = output_dir / "multi"
+        runs.append(run_backtest(args, pairs, sum(allocation), run_dir, mode="multi", pair="PORTFOLIO"))
+
+    rows: list[dict] = []
+    trade_rows: list[dict] = []
+    single_equities: list[pd.DataFrame] = []
+    for run in runs:
+        result = parse_result_zip(run.result_zip, args.strategy)
+        equity = build_equity_curve(result.wallet)
+        rows.append(summarize_run(
+            args=args,
+            run=run,
+            result=result,
+            equity=equity,
+            pairs=pairs if run.mode == "multi" else [run.pair],
+            allocation=allocation if run.mode == "multi" else [run.wallet],
+        ))
+        trade_rows.extend(extract_trade_rows(run, result.trades))
+        if run.mode == "single":
+            single_equities.append(equity.rename(columns={
+                "equity": f"{run.pair}:equity",
+                "cash_value": f"{run.pair}:cash",
+            })[["date", f"{run.pair}:equity", f"{run.pair}:cash"]])
+
+    if single_equities:
+        rows.append(summarize_fixed_single_portfolio(
+            args=args,
+            equities=single_equities,
+            pairs=pairs,
+            allocation=allocation,
+            output_dir=output_dir,
+        ))
+
+    rows = json_safe_rows(rows)
+    summary = pd.DataFrame(rows)
+    summary.to_csv(output_dir / "summary.csv", index=False)
+    pd.DataFrame(trade_rows).to_csv(output_dir / "trades.csv", index=False)
+    (output_dir / "summary.json").write_text(
+        json.dumps(rows, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    print(summary.to_string(index=False))
+    print(f"\nWrote {output_dir}")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--strategy", default="CryptoSpotV219B")
+    parser.add_argument("--config", default="freqtrade_user_data/config/config.dryrun.example.json")
+    parser.add_argument("--userdir", default="freqtrade_user_data")
+    parser.add_argument("--timeframe", default="1d")
+    parser.add_argument("--timerange", default="20240601-20260601")
+    parser.add_argument("--report-window", default="20260301-20260601")
+    parser.add_argument("--pairs", nargs="+", default=DEFAULT_PAIRS)
+    parser.add_argument("--allocation", nargs="+", type=float, default=DEFAULT_ALLOCATION)
+    parser.add_argument("--mode", choices=["single", "multi", "both"], default="both")
+    parser.add_argument("--cache", default="none")
+    parser.add_argument("--output-dir", default="results/freqtrade_eval")
+    parser.add_argument("--run-id", default="")
+    parser.add_argument("--no-run", action="store_true", help="Parse latest zip files in the output directory.")
+    return parser.parse_args()
+
+
+def run_backtest(
+    args: argparse.Namespace,
+    pairs: list[str],
+    wallet: float,
+    run_dir: Path,
+    *,
+    mode: str,
+    pair: str,
+) -> BacktestRun:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if args.no_run:
+        result_zip = latest_result_zip(run_dir)
+        return BacktestRun(mode=mode, pair=pair, wallet=wallet, directory=run_dir, result_zip=result_zip)
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "freqtrade",
+        "backtesting",
+        "--userdir",
+        args.userdir,
+        "--config",
+        args.config,
+        "--strategy",
+        args.strategy,
+        "--timerange",
+        args.timerange,
+        "--timeframe",
+        args.timeframe,
+        "--cache",
+        args.cache,
+        "--dry-run-wallet",
+        f"{wallet:g}",
+        "--backtest-directory",
+        str(run_dir),
+        "--pairs",
+        *pairs,
+    ]
+    print("Running:", " ".join(cmd))
+    subprocess.run(cmd, cwd=PROJECT_ROOT, check=True)
+    return BacktestRun(mode=mode, pair=pair, wallet=wallet, directory=run_dir, result_zip=latest_result_zip(run_dir))
+
+
+def latest_result_zip(directory: Path) -> Path:
+    files = sorted(directory.glob("backtest-result-*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not files:
+        raise FileNotFoundError(f"No Freqtrade result zip found in {directory}")
+    return files[0]
+
+
+@dataclass
+class ParsedResult:
+    strategy: dict
+    wallet: pd.DataFrame
+    trades: list[dict]
+
+
+def parse_result_zip(path: Path, strategy: str) -> ParsedResult:
+    with zipfile.ZipFile(path) as zf:
+        result_json = None
+        for name in zf.namelist():
+            if not name.endswith(".json") or name.endswith("_config.json") or name.endswith(".meta.json"):
+                continue
+            candidate = json.loads(zf.read(name))
+            if isinstance(candidate, dict) and "strategy" in candidate:
+                result_json = candidate
+                break
+        if result_json is None:
+            raise ValueError(f"Missing strategy result JSON in {path}")
+        strategy_result = result_json["strategy"][strategy]
+        wallet_name = next(name for name in zf.namelist() if name.endswith("_wallet.feather"))
+        wallet = read_feather_from_zip(zf, wallet_name)
+    return ParsedResult(
+        strategy=strategy_result,
+        wallet=wallet,
+        trades=list(strategy_result.get("trades", [])),
+    )
+
+
+def read_feather_from_zip(zf: zipfile.ZipFile, name: str) -> pd.DataFrame:
+    with tempfile.NamedTemporaryFile(suffix=".feather", delete=False) as handle:
+        handle.write(zf.read(name))
+        temp_path = Path(handle.name)
+    try:
+        return pd.read_feather(temp_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def build_equity_curve(wallet: pd.DataFrame) -> pd.DataFrame:
+    frame = wallet.copy()
+    frame["date"] = pd.to_datetime(frame["date"], utc=True)
+    grouped = frame.groupby("date", as_index=False).agg(equity=("total_quote", "sum"))
+    cash = frame[frame["currency"] == "USDT"].groupby("date", as_index=False)["total_quote"].sum()
+    cash = cash.rename(columns={"total_quote": "cash_value"})
+    grouped = grouped.merge(cash, on="date", how="left")
+    grouped["cash_value"] = grouped["cash_value"].fillna(0.0)
+    grouped["exposure"] = (grouped["equity"] - grouped["cash_value"]) / grouped["equity"].clip(lower=1e-9)
+    return grouped.sort_values("date")
+
+
+def summarize_run(
+    *,
+    args: argparse.Namespace,
+    run: BacktestRun,
+    result: ParsedResult,
+    equity: pd.DataFrame,
+    pairs: list[str],
+    allocation: list[float],
+) -> dict:
+    window_start, window_end = parse_window(args.report_window)
+    full_start, full_end = first_last_equity(equity)
+    window = slice_equity(equity, window_start, window_end)
+    bh_full = buyhold_return(pairs, allocation, full_start, full_end, args)
+    bh_window = buyhold_return(pairs, allocation, window["date"].iloc[0], window["date"].iloc[-1], args)
+    trades = result.trades
+    return {
+        "mode": run.mode,
+        "pair": run.pair,
+        "timerange": args.timerange,
+        "report_window": args.report_window,
+        "start_wallet": run.wallet,
+        "final_equity": float(equity["equity"].iloc[-1]),
+        "total_return_pct": pct_return(equity["equity"].iloc[0], equity["equity"].iloc[-1]),
+        "buyhold_total_return_pct": bh_full * 100,
+        "total_excess_pct": pct_return(equity["equity"].iloc[0], equity["equity"].iloc[-1]) - bh_full * 100,
+        "max_drawdown_pct": max_drawdown(equity["equity"]) * 100,
+        "underwater_days": underwater_days(equity),
+        "avg_exposure_pct": float(equity["exposure"].mean() * 100),
+        "trade_count": len(trades),
+        "win_rate_pct": win_rate(trades) * 100,
+        "window_start_equity": float(window["equity"].iloc[0]),
+        "window_end_equity": float(window["equity"].iloc[-1]),
+        "window_return_pct": pct_return(window["equity"].iloc[0], window["equity"].iloc[-1]),
+        "window_buyhold_return_pct": bh_window * 100,
+        "window_excess_pct": pct_return(window["equity"].iloc[0], window["equity"].iloc[-1]) - bh_window * 100,
+        "window_max_drawdown_pct": max_drawdown(window["equity"]) * 100,
+        "window_underwater_days": underwater_days(window),
+        "window_avg_exposure_pct": float(window["exposure"].mean() * 100),
+        "window_trades_opened": count_trades(trades, window_start, window_end, "open"),
+        "window_trades_closed": count_trades(trades, window_start, window_end, "close"),
+        "active_at_window_start": active_at_start(trades, window_start),
+        "result_zip": str(run.result_zip),
+    }
+
+
+def summarize_fixed_single_portfolio(
+    *,
+    args: argparse.Namespace,
+    equities: list[pd.DataFrame],
+    pairs: list[str],
+    allocation: list[float],
+    output_dir: Path,
+) -> dict:
+    merged = equities[0]
+    for item in equities[1:]:
+        merged = merged.merge(item, on="date", how="outer")
+    merged = merged.sort_values("date").ffill()
+    equity_cols = [f"{pair}:equity" for pair in pairs]
+    cash_cols = [f"{pair}:cash" for pair in pairs]
+    merged["equity"] = merged[equity_cols].sum(axis=1)
+    merged["cash_value"] = merged[cash_cols].sum(axis=1)
+    merged["exposure"] = (merged["equity"] - merged["cash_value"]) / merged["equity"].clip(lower=1e-9)
+    merged[["date", "equity"]].to_csv(output_dir / "single_fixed_portfolio_equity.csv", index=False)
+
+    window_start, window_end = parse_window(args.report_window)
+    full_start, full_end = first_last_equity(merged)
+    window = slice_equity(merged, window_start, window_end)
+    bh_full = buyhold_return(pairs, allocation, full_start, full_end, args)
+    bh_window = buyhold_return(pairs, allocation, window["date"].iloc[0], window["date"].iloc[-1], args)
+    return {
+        "mode": "single_fixed_aggregate",
+        "pair": "PORTFOLIO",
+        "timerange": args.timerange,
+        "report_window": args.report_window,
+        "start_wallet": sum(allocation),
+        "final_equity": float(merged["equity"].iloc[-1]),
+        "total_return_pct": pct_return(merged["equity"].iloc[0], merged["equity"].iloc[-1]),
+        "buyhold_total_return_pct": bh_full * 100,
+        "total_excess_pct": pct_return(merged["equity"].iloc[0], merged["equity"].iloc[-1]) - bh_full * 100,
+        "max_drawdown_pct": max_drawdown(merged["equity"]) * 100,
+        "underwater_days": underwater_days(merged),
+        "avg_exposure_pct": float(merged["exposure"].mean() * 100),
+        "trade_count": None,
+        "win_rate_pct": None,
+        "window_start_equity": float(window["equity"].iloc[0]),
+        "window_end_equity": float(window["equity"].iloc[-1]),
+        "window_return_pct": pct_return(window["equity"].iloc[0], window["equity"].iloc[-1]),
+        "window_buyhold_return_pct": bh_window * 100,
+        "window_excess_pct": pct_return(window["equity"].iloc[0], window["equity"].iloc[-1]) - bh_window * 100,
+        "window_max_drawdown_pct": max_drawdown(window["equity"]) * 100,
+        "window_underwater_days": underwater_days(window),
+        "window_avg_exposure_pct": float(window["exposure"].mean() * 100),
+        "window_trades_opened": None,
+        "window_trades_closed": None,
+        "active_at_window_start": None,
+        "result_zip": "",
+    }
+
+
+def buyhold_return(pairs: list[str], allocation: list[float], start: pd.Timestamp, end: pd.Timestamp, args: argparse.Namespace) -> float:
+    initial = sum(allocation)
+    final = 0.0
+    for pair, stake in zip(pairs, allocation):
+        prices = load_pair_prices(pair, args)
+        start_price = price_on_or_after(prices, start)
+        end_price = price_on_or_before(prices, end)
+        final += stake * end_price / start_price
+    return final / initial - 1.0 if initial else 0.0
+
+
+def load_pair_prices(pair: str, args: argparse.Namespace) -> pd.DataFrame:
+    data_dir = PROJECT_ROOT / args.userdir / "data" / "binance"
+    path = data_dir / f"{pair.replace('/', '_')}-{args.timeframe}.feather"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing OHLCV data: {path}")
+    frame = pd.read_feather(path)
+    frame["date"] = pd.to_datetime(frame["date"], utc=True)
+    return frame.sort_values("date")
+
+
+def price_on_or_after(prices: pd.DataFrame, date: pd.Timestamp) -> float:
+    rows = prices[prices["date"] >= date]
+    if rows.empty:
+        raise ValueError(f"No price on or after {date}")
+    return float(rows.iloc[0]["close"])
+
+
+def price_on_or_before(prices: pd.DataFrame, date: pd.Timestamp) -> float:
+    rows = prices[prices["date"] <= date]
+    if rows.empty:
+        raise ValueError(f"No price on or before {date}")
+    return float(rows.iloc[-1]["close"])
+
+
+def parse_window(value: str) -> tuple[pd.Timestamp, pd.Timestamp]:
+    start, end = value.split("-", 1)
+    return parse_date(start), parse_date(end)
+
+
+def parse_date(value: str) -> pd.Timestamp:
+    return pd.Timestamp(value, tz="UTC")
+
+
+def first_last_equity(equity: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timestamp]:
+    return pd.Timestamp(equity["date"].iloc[0]), pd.Timestamp(equity["date"].iloc[-1])
+
+
+def slice_equity(equity: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    rows = equity[(equity["date"] >= start) & (equity["date"] <= end)].copy()
+    if rows.empty:
+        raise ValueError(f"No equity rows in report window {start} - {end}")
+    return rows
+
+
+def pct_return(start: float, end: float) -> float:
+    return (float(end) / float(start) - 1.0) * 100 if start else 0.0
+
+
+def max_drawdown(series: Iterable[float]) -> float:
+    values = pd.Series(series, dtype=float).dropna()
+    if values.empty:
+        return 0.0
+    return float((values / values.cummax() - 1.0).min())
+
+
+def underwater_days(equity: pd.DataFrame) -> int:
+    values = equity[["date", "equity"]].dropna().copy()
+    if values.empty:
+        return 0
+    values["underwater"] = values["equity"] < values["equity"].cummax()
+    longest = current = 0
+    for is_underwater in values["underwater"]:
+        current = current + 1 if bool(is_underwater) else 0
+        longest = max(longest, current)
+    return int(longest)
+
+
+def win_rate(trades: list[dict]) -> float:
+    if not trades:
+        return 0.0
+    wins = sum(1 for trade in trades if float(trade.get("profit_ratio") or 0.0) > 0)
+    return wins / len(trades)
+
+
+def count_trades(trades: list[dict], start: pd.Timestamp, end: pd.Timestamp, field: str) -> int:
+    count = 0
+    for trade in trades:
+        date = trade_date(trade, field)
+        if date is not None and start <= date <= end:
+            count += 1
+    return count
+
+
+def active_at_start(trades: list[dict], start: pd.Timestamp) -> bool:
+    for trade in trades:
+        open_date = trade_date(trade, "open")
+        close_date = trade_date(trade, "close")
+        if open_date is not None and open_date < start and (close_date is None or close_date >= start):
+            return True
+    return False
+
+
+def trade_date(trade: dict, field: str) -> pd.Timestamp | None:
+    keys = {
+        "open": ("open_date", "open_date_utc"),
+        "close": ("close_date", "close_date_utc"),
+    }[field]
+    for key in keys:
+        value = trade.get(key)
+        if value:
+            date = pd.to_datetime(value, utc=True, errors="coerce")
+            if pd.notna(date):
+                return pd.Timestamp(date)
+    return None
+
+
+def extract_trade_rows(run: BacktestRun, trades: list[dict]) -> list[dict]:
+    rows = []
+    for trade in trades:
+        rows.append({
+            "mode": run.mode,
+            "run_pair": run.pair,
+            "pair": trade.get("pair"),
+            "open_date": trade.get("open_date") or trade.get("open_date_utc"),
+            "close_date": trade.get("close_date") or trade.get("close_date_utc"),
+            "profit_pct": float(trade.get("profit_ratio") or 0.0) * 100,
+            "profit_abs": trade.get("profit_abs"),
+            "stake_amount": trade.get("stake_amount"),
+            "open_rate": trade.get("open_rate"),
+            "close_rate": trade.get("close_rate"),
+            "enter_tag": trade.get("enter_tag"),
+            "exit_reason": trade.get("exit_reason"),
+        })
+    return rows
+
+
+def safe_name(pair: str) -> str:
+    return pair.replace("/", "_").replace(":", "_")
+
+
+def json_safe_rows(rows: list[dict]) -> list[dict]:
+    safe: list[dict] = []
+    for row in rows:
+        out = {}
+        for key, value in row.items():
+            if pd.isna(value) if not isinstance(value, (list, dict, tuple)) else False:
+                out[key] = None
+            else:
+                out[key] = value
+        safe.append(out)
+    return safe
+
+
+if __name__ == "__main__":
+    main()
