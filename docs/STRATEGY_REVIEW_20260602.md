@@ -69,9 +69,33 @@ Do not weaken these until there is stronger evidence:
 These rules are responsible for the strategy's downside protection and for the
 full-period outperformance.
 
+## Rejected Candidate: v2_20B
+
+`v2_20B` tested target-reduce hysteresis, a structural MIXED trim cap, and fast
+post-trim re-entry. It is rejected and should not be kept in active strategy
+code.
+
+Quick rolling comparison:
+
+| strategy | mean excess | median excess | win rate | worst excess |
+| --- | ---: | ---: | ---: | ---: |
+| `v2_19B` | `-2.16%` | `-11.14%` | `36.36%` | `-104.05%` |
+| `v2_20B` | `-26.40%` | `-16.40%` | `36.36%` | `-130.53%` |
+
+The failure is concentrated in strong bull/recovery windows:
+
+- `20200629-20210629`: excess fell from `168.18%` to `25.43%`.
+- `20201226-20211226`: excess fell from `-11.14%` to `-130.53%`.
+
+Conclusion: broad target-reduce suppression is too blunt. It slightly improves a
+few later choppy windows, but it damages the core job of the strategy: staying
+invested through long uptrends.
+
 ## Candidate Plan
 
-Next candidate should be `v2_20B`, not a replacement for `v2_19B` yet.
+The next candidate should avoid broad sell suppression. It should either be a
+diagnostic pass or a narrow behavior change that only affects re-entry after a
+valid trim.
 
 Design target:
 
@@ -80,32 +104,26 @@ Design target:
 - avoid symbol-specific behavior;
 - avoid using recent-window performance as the main criterion.
 
-Proposed rule set:
+Possible rule set:
 
-1. Target-reduce hysteresis
-
-   In `MIXED`, after a `target-reduce` sell, block additional `target-reduce`
-   sells for the same symbol until either risk worsens or enough bars pass.
-   Risk-reduce and trend-break remain allowed.
-
-2. Structural core floor
-
-   When `ema72 > ema168` and `ema168_slope > 0`, a `target-reduce` sell should
-   not reduce exposure below a moderate core floor, such as `0.65`. This applies
-   only to `target-reduce`.
-
-3. Fast re-entry after target-reduce
+1. Fast re-entry after target-reduce
 
    If a recent `target-reduce` was followed by price reclaiming `ema24` with
    positive short-term momentum, reduce buy cooldown so the strategy can restore
    exposure without waiting for full BULL confirmation.
+
+2. Delay-only confirmation
+
+   Test a short delay before low-risk `target-reduce` in constructive `MIXED`,
+   but do not reduce sell size or block later sells. Risk-reduce and trend-break
+   remain unchanged.
 
 ## Validation Order
 
 Use this order for the next iteration:
 
 1. Run targeted windows with `--no-run` only when parsing existing results.
-2. Run quick rolling for `v2_20B`.
+2. Run quick rolling for the candidate.
 3. Compare against `v2_19B` using:
    - rolling median excess;
    - rolling win rate;
@@ -118,6 +136,6 @@ Use this order for the next iteration:
 
 ## Promotion Requirement
 
-`v2_20B` can replace `v2_19B` only if it improves rolling stability without
+Any candidate can replace `v2_19B` only if it improves rolling stability without
 materially hurting full-period excess or max drawdown. Recent-window improvement
 alone is not sufficient.
