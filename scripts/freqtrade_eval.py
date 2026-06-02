@@ -41,10 +41,24 @@ def main() -> None:
     output_dir = Path(args.output_dir) / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.rolling_windows:
+        run_rolling_eval(args, output_dir)
+        return
+
+    run_single_eval(args, output_dir, timerange=args.timerange, report_window=args.report_window)
+
+
+def run_single_eval(
+    args: argparse.Namespace,
+    output_dir: Path,
+    *,
+    timerange: str,
+    report_window: str,
+) -> list[dict]:
     runs: list[BacktestRun] = []
-    for pair, wallet in zip(pairs, allocation):
+    for pair, wallet in zip(args.pairs, args.allocation):
         run_dir = output_dir / "single" / safe_name(pair)
-        runs.append(run_backtest(args, [pair], wallet, run_dir, pair=pair))
+        runs.append(run_backtest(args, [pair], wallet, run_dir, pair=pair, timerange=timerange))
 
     rows: list[dict] = []
     trade_rows: list[dict] = []
@@ -59,6 +73,8 @@ def main() -> None:
             equity=equity,
             pairs=[run.pair],
             allocation=[run.wallet],
+            timerange=timerange,
+            report_window=report_window,
         ))
         trade_rows.extend(extract_trade_rows(run, result.trades))
         single_equities.append(equity.rename(columns={
@@ -70,9 +86,11 @@ def main() -> None:
         rows.append(summarize_fixed_single_portfolio(
             args=args,
             equities=single_equities,
-            pairs=pairs,
-            allocation=allocation,
+            pairs=args.pairs,
+            allocation=args.allocation,
             output_dir=output_dir,
+            timerange=timerange,
+            report_window=report_window,
         ))
 
     rows = json_safe_rows(rows)
@@ -86,6 +104,38 @@ def main() -> None:
     (output_dir / "report.md").write_text(render_markdown_report(args, rows), encoding="utf-8")
     print(summary.to_string(index=False))
     print(f"\nWrote {output_dir}")
+    return rows
+
+
+def run_rolling_eval(args: argparse.Namespace, output_dir: Path) -> None:
+    windows = rolling_windows(args.timerange, args.rolling_window_days, args.rolling_step_days)
+    if not windows:
+        raise SystemExit("No rolling windows generated. Check --timerange and rolling settings.")
+
+    aggregate_rows: list[dict] = []
+    for idx, (start, end) in enumerate(windows, start=1):
+        timerange = f"{fmt_date(start)}-{fmt_date(end)}"
+        window_dir = output_dir / f"window_{idx:03d}_{fmt_date(start)}_{fmt_date(end)}"
+        rows = run_single_eval(args, window_dir, timerange=timerange, report_window=timerange)
+        aggregate = next(row for row in rows if row["mode"] == "single_fixed_aggregate")
+        aggregate_rows.append({
+            "window_index": idx,
+            "window_start": fmt_date(start),
+            "window_end": fmt_date(end),
+            "portfolio_return_pct": aggregate["total_return_pct"],
+            "buyhold_return_pct": aggregate["buyhold_total_return_pct"],
+            "excess_return_pct": aggregate["total_excess_pct"],
+            "max_drawdown_pct": aggregate["max_drawdown_pct"],
+            "underwater_days": aggregate["underwater_days"],
+            "avg_exposure_pct": aggregate["avg_exposure_pct"],
+            "result_dir": str(window_dir),
+        })
+
+    rolling = pd.DataFrame(aggregate_rows)
+    rolling.to_csv(output_dir / "rolling_summary.csv", index=False)
+    (output_dir / "rolling_report.md").write_text(render_rolling_report(args, aggregate_rows), encoding="utf-8")
+    print(rolling.to_string(index=False))
+    print(f"\nWrote rolling evaluation {output_dir}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,6 +153,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-id", default="")
     parser.add_argument("--no-run", action="store_true", help="Parse latest zip files in the output directory.")
     parser.add_argument("--verbose", action="store_true", help="Print full Freqtrade output instead of writing it to backtest.log.")
+    parser.add_argument("--rolling-windows", action="store_true", help="Run lightweight fixed-allocation rolling-window evaluation.")
+    parser.add_argument("--rolling-window-days", type=int, default=365)
+    parser.add_argument("--rolling-step-days", type=int, default=90)
     return parser.parse_args()
 
 
@@ -113,6 +166,7 @@ def run_backtest(
     run_dir: Path,
     *,
     pair: str,
+    timerange: str,
 ) -> BacktestRun:
     run_dir.mkdir(parents=True, exist_ok=True)
     if args.no_run:
@@ -131,7 +185,7 @@ def run_backtest(
         "--strategy",
         args.strategy,
         "--timerange",
-        args.timerange,
+        timerange,
         "--timeframe",
         args.timeframe,
         "--cache",
@@ -229,8 +283,10 @@ def summarize_run(
     equity: pd.DataFrame,
     pairs: list[str],
     allocation: list[float],
+    timerange: str,
+    report_window: str,
 ) -> dict:
-    window_start, window_end = parse_window(args.report_window)
+    window_start, window_end = parse_window(report_window)
     full_start, full_end = first_last_equity(equity)
     window = slice_equity(equity, window_start, window_end)
     bh_full = buyhold_return(pairs, allocation, full_start, full_end, args)
@@ -239,8 +295,8 @@ def summarize_run(
     return {
         "mode": "single",
         "pair": run.pair,
-        "timerange": args.timerange,
-        "report_window": args.report_window,
+        "timerange": timerange,
+        "report_window": report_window,
         "start_wallet": run.wallet,
         "final_equity": float(equity["equity"].iloc[-1]),
         "total_return_pct": pct_return(equity["equity"].iloc[0], equity["equity"].iloc[-1]),
@@ -273,6 +329,8 @@ def summarize_fixed_single_portfolio(
     pairs: list[str],
     allocation: list[float],
     output_dir: Path,
+    timerange: str,
+    report_window: str,
 ) -> dict:
     merged = equities[0]
     for item in equities[1:]:
@@ -285,7 +343,7 @@ def summarize_fixed_single_portfolio(
     merged["exposure"] = (merged["equity"] - merged["cash_value"]) / merged["equity"].clip(lower=1e-9)
     merged[["date", "equity"]].to_csv(output_dir / "single_fixed_portfolio_equity.csv", index=False)
 
-    window_start, window_end = parse_window(args.report_window)
+    window_start, window_end = parse_window(report_window)
     full_start, full_end = first_last_equity(merged)
     window = slice_equity(merged, window_start, window_end)
     bh_full = buyhold_return(pairs, allocation, full_start, full_end, args)
@@ -293,8 +351,8 @@ def summarize_fixed_single_portfolio(
     return {
         "mode": "single_fixed_aggregate",
         "pair": "PORTFOLIO",
-        "timerange": args.timerange,
-        "report_window": args.report_window,
+        "timerange": timerange,
+        "report_window": report_window,
         "start_wallet": sum(allocation),
         "final_equity": float(merged["equity"].iloc[-1]),
         "total_return_pct": pct_return(merged["equity"].iloc[0], merged["equity"].iloc[-1]),
@@ -362,6 +420,23 @@ def parse_window(value: str) -> tuple[pd.Timestamp, pd.Timestamp]:
 
 def parse_date(value: str) -> pd.Timestamp:
     return pd.Timestamp(value, tz="UTC")
+
+
+def rolling_windows(timerange: str, window_days: int, step_days: int) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    if window_days <= 0 or step_days <= 0:
+        raise ValueError("rolling window and step days must be positive")
+    start, end = parse_window(timerange)
+    windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    current = start
+    while current + pd.Timedelta(days=window_days) <= end:
+        window_end = current + pd.Timedelta(days=window_days)
+        windows.append((current, window_end))
+        current += pd.Timedelta(days=step_days)
+    return windows
+
+
+def fmt_date(value: pd.Timestamp) -> str:
+    return pd.Timestamp(value).strftime("%Y%m%d")
 
 
 def first_last_equity(equity: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -528,6 +603,52 @@ def render_markdown_report(args: argparse.Namespace, rows: list[dict]) -> str:
         "- `single_fixed_portfolio_equity.csv`: fixed-allocation aggregate equity curve",
         "- `backtest.log`: raw Freqtrade output in each run directory",
     ])
+    return "\n".join(lines) + "\n"
+
+
+def render_rolling_report(args: argparse.Namespace, rows: list[dict]) -> str:
+    frame = pd.DataFrame(rows)
+    lines = [
+        "# Freqtrade Rolling Evaluation",
+        "",
+        f"- Strategy: `{args.strategy}`",
+        f"- Timerange: `{args.timerange}`",
+        f"- Window days: `{args.rolling_window_days}`",
+        f"- Step days: `{args.rolling_step_days}`",
+        f"- Pairs: `{', '.join(args.pairs)}`",
+        f"- Allocation: `{', '.join(f'{item:g}' for item in args.allocation)}`",
+        "",
+        "## Aggregate",
+        "",
+    ]
+    if frame.empty:
+        lines.append("No windows generated.")
+        return "\n".join(lines) + "\n"
+
+    lines.extend([
+        f"- Windows: `{len(frame)}`",
+        f"- Mean return: `{frame['portfolio_return_pct'].mean():.2f}%`",
+        f"- Median return: `{frame['portfolio_return_pct'].median():.2f}%`",
+        f"- Mean Buy&Hold: `{frame['buyhold_return_pct'].mean():.2f}%`",
+        f"- Median excess: `{frame['excess_return_pct'].median():.2f}%`",
+        f"- Win rate vs Buy&Hold: `{(frame['excess_return_pct'] > 0).mean() * 100:.1f}%`",
+        f"- Worst return: `{frame['portfolio_return_pct'].min():.2f}%`",
+        f"- Worst max drawdown: `{frame['max_drawdown_pct'].min():.2f}%`",
+        "",
+        "## Windows",
+        "",
+        "| Window | Strategy | Buy&Hold | Excess | Max DD | Avg Exposure |",
+        "|---|---:|---:|---:|---:|---:|",
+    ])
+    for row in rows:
+        lines.append(
+            f"| {row['window_start']}~{row['window_end']} | "
+            f"{row['portfolio_return_pct']:.2f}% | "
+            f"{row['buyhold_return_pct']:.2f}% | "
+            f"{row['excess_return_pct']:.2f}% | "
+            f"{row['max_drawdown_pct']:.2f}% | "
+            f"{row['avg_exposure_pct']:.2f}% |"
+        )
     return "\n".join(lines) + "\n"
 
 
