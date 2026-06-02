@@ -20,6 +20,10 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PAIRS = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
 DEFAULT_ALLOCATION = [333.0, 333.0, 334.0]
+ROLLING_PRESETS = {
+    "quick": [(365, 180)],
+    "standard": [(365, 90), (730, 120), (1095, 180)],
+}
 
 
 @dataclass(frozen=True)
@@ -41,7 +45,7 @@ def main() -> None:
     output_dir = Path(args.output_dir) / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.rolling_windows:
+    if args.rolling_windows or args.rolling_preset:
         run_rolling_eval(args, output_dir)
         return
 
@@ -108,29 +112,47 @@ def run_single_eval(
 
 
 def run_rolling_eval(args: argparse.Namespace, output_dir: Path) -> None:
-    windows = rolling_windows(args.timerange, args.rolling_window_days, args.rolling_step_days)
-    if not windows:
+    detail_rows: list[dict] = []
+    aggregate_rows: list[dict] = []
+    for spec_index, (window_days, step_days) in enumerate(rolling_specs(args), start=1):
+        windows = rolling_windows(args.timerange, window_days, step_days)
+        if not windows:
+            continue
+        for window_index, (start, end) in enumerate(windows, start=1):
+            timerange = f"{fmt_date(start)}-{fmt_date(end)}"
+            window_dir = (
+                output_dir
+                / f"{window_days}d_step{step_days}d"
+                / f"window_{window_index:03d}_{fmt_date(start)}_{fmt_date(end)}"
+            )
+            rows = run_single_eval(args, window_dir, timerange=timerange, report_window=timerange)
+            for row in rows:
+                detail_rows.append(rolling_detail_row(
+                    row=row,
+                    spec_index=spec_index,
+                    window_index=window_index,
+                    window_days=window_days,
+                    step_days=step_days,
+                    window_start=start,
+                    window_end=end,
+                    result_dir=window_dir,
+                ))
+            aggregate = next(row for row in rows if row["mode"] == "single_fixed_aggregate")
+            aggregate_rows.append(rolling_aggregate_row(
+                row=aggregate,
+                spec_index=spec_index,
+                window_index=window_index,
+                window_days=window_days,
+                step_days=step_days,
+                window_start=start,
+                window_end=end,
+                result_dir=window_dir,
+            ))
+
+    if not aggregate_rows:
         raise SystemExit("No rolling windows generated. Check --timerange and rolling settings.")
 
-    aggregate_rows: list[dict] = []
-    for idx, (start, end) in enumerate(windows, start=1):
-        timerange = f"{fmt_date(start)}-{fmt_date(end)}"
-        window_dir = output_dir / f"window_{idx:03d}_{fmt_date(start)}_{fmt_date(end)}"
-        rows = run_single_eval(args, window_dir, timerange=timerange, report_window=timerange)
-        aggregate = next(row for row in rows if row["mode"] == "single_fixed_aggregate")
-        aggregate_rows.append({
-            "window_index": idx,
-            "window_start": fmt_date(start),
-            "window_end": fmt_date(end),
-            "portfolio_return_pct": aggregate["total_return_pct"],
-            "buyhold_return_pct": aggregate["buyhold_total_return_pct"],
-            "excess_return_pct": aggregate["total_excess_pct"],
-            "max_drawdown_pct": aggregate["max_drawdown_pct"],
-            "underwater_days": aggregate["underwater_days"],
-            "avg_exposure_pct": aggregate["avg_exposure_pct"],
-            "result_dir": str(window_dir),
-        })
-
+    pd.DataFrame(detail_rows).to_csv(output_dir / "rolling_detail.csv", index=False)
     rolling = pd.DataFrame(aggregate_rows)
     rolling.to_csv(output_dir / "rolling_summary.csv", index=False)
     (output_dir / "rolling_report.md").write_text(render_rolling_report(args, aggregate_rows), encoding="utf-8")
@@ -154,6 +176,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-run", action="store_true", help="Parse latest zip files in the output directory.")
     parser.add_argument("--verbose", action="store_true", help="Print full Freqtrade output instead of writing it to backtest.log.")
     parser.add_argument("--rolling-windows", action="store_true", help="Run lightweight fixed-allocation rolling-window evaluation.")
+    parser.add_argument("--rolling-preset", choices=sorted(ROLLING_PRESETS), default="")
     parser.add_argument("--rolling-window-days", type=int, default=365)
     parser.add_argument("--rolling-step-days", type=int, default=90)
     return parser.parse_args()
@@ -435,6 +458,82 @@ def rolling_windows(timerange: str, window_days: int, step_days: int) -> list[tu
     return windows
 
 
+def rolling_specs(args: argparse.Namespace) -> list[tuple[int, int]]:
+    if args.rolling_preset:
+        return ROLLING_PRESETS[args.rolling_preset]
+    return [(args.rolling_window_days, args.rolling_step_days)]
+
+
+def rolling_detail_row(
+    *,
+    row: dict,
+    spec_index: int,
+    window_index: int,
+    window_days: int,
+    step_days: int,
+    window_start: pd.Timestamp,
+    window_end: pd.Timestamp,
+    result_dir: Path,
+) -> dict:
+    return {
+        "spec_index": spec_index,
+        "window_index": window_index,
+        "window_days": window_days,
+        "step_days": step_days,
+        "window_start": fmt_date(window_start),
+        "window_end": fmt_date(window_end),
+        "mode": row["mode"],
+        "pair": row["pair"],
+        "return_pct": row["total_return_pct"],
+        "buyhold_return_pct": row["buyhold_total_return_pct"],
+        "excess_return_pct": row["total_excess_pct"],
+        "max_drawdown_pct": row["max_drawdown_pct"],
+        "underwater_days": row["underwater_days"],
+        "avg_exposure_pct": row["avg_exposure_pct"],
+        "trade_count": row["trade_count"],
+        "win_rate_pct": row["win_rate_pct"],
+        "result_dir": str(result_dir),
+    }
+
+
+def rolling_aggregate_row(
+    *,
+    row: dict,
+    spec_index: int,
+    window_index: int,
+    window_days: int,
+    step_days: int,
+    window_start: pd.Timestamp,
+    window_end: pd.Timestamp,
+    result_dir: Path,
+) -> dict:
+    detail = rolling_detail_row(
+        row=row,
+        spec_index=spec_index,
+        window_index=window_index,
+        window_days=window_days,
+        step_days=step_days,
+        window_start=window_start,
+        window_end=window_end,
+        result_dir=result_dir,
+    )
+    return {
+        "spec_index": detail["spec_index"],
+        "window_index": detail["window_index"],
+        "window_days": detail["window_days"],
+        "step_days": detail["step_days"],
+        "window_start": detail["window_start"],
+        "window_end": detail["window_end"],
+        "portfolio_return_pct": detail["return_pct"],
+        "buyhold_return_pct": detail["buyhold_return_pct"],
+        "excess_return_pct": detail["excess_return_pct"],
+        "max_drawdown_pct": detail["max_drawdown_pct"],
+        "underwater_days": detail["underwater_days"],
+        "avg_exposure_pct": detail["avg_exposure_pct"],
+        "result_dir": detail["result_dir"],
+    }
+
+
 def fmt_date(value: pd.Timestamp) -> str:
     return pd.Timestamp(value).strftime("%Y%m%d")
 
@@ -613,8 +712,8 @@ def render_rolling_report(args: argparse.Namespace, rows: list[dict]) -> str:
         "",
         f"- Strategy: `{args.strategy}`",
         f"- Timerange: `{args.timerange}`",
-        f"- Window days: `{args.rolling_window_days}`",
-        f"- Step days: `{args.rolling_step_days}`",
+        f"- Rolling preset: `{args.rolling_preset or 'custom'}`",
+        f"- Rolling specs: `{', '.join(f'{days}d/{step}d' for days, step in rolling_specs(args))}`",
         f"- Pairs: `{', '.join(args.pairs)}`",
         f"- Allocation: `{', '.join(f'{item:g}' for item in args.allocation)}`",
         "",
@@ -635,14 +734,30 @@ def render_rolling_report(args: argparse.Namespace, rows: list[dict]) -> str:
         f"- Worst return: `{frame['portfolio_return_pct'].min():.2f}%`",
         f"- Worst max drawdown: `{frame['max_drawdown_pct'].min():.2f}%`",
         "",
+        "## By Length",
+        "",
+        "| Length | Step | Windows | Median Return | Median Excess | Win Rate | Worst Return | Worst DD |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ])
+    for (window_days, step_days), group in frame.groupby(["window_days", "step_days"], sort=True):
+        lines.append(
+            f"| {window_days}d | {step_days}d | {len(group)} | "
+            f"{group['portfolio_return_pct'].median():.2f}% | "
+            f"{group['excess_return_pct'].median():.2f}% | "
+            f"{(group['excess_return_pct'] > 0).mean() * 100:.1f}% | "
+            f"{group['portfolio_return_pct'].min():.2f}% | "
+            f"{group['max_drawdown_pct'].min():.2f}% |"
+        )
+    lines.extend([
+        "",
         "## Windows",
         "",
-        "| Window | Strategy | Buy&Hold | Excess | Max DD | Avg Exposure |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Length | Window | Strategy | Buy&Hold | Excess | Max DD | Avg Exposure |",
+        "|---:|---|---:|---:|---:|---:|---:|",
     ])
     for row in rows:
         lines.append(
-            f"| {row['window_start']}~{row['window_end']} | "
+            f"| {row['window_days']}d | {row['window_start']}~{row['window_end']} | "
             f"{row['portfolio_return_pct']:.2f}% | "
             f"{row['buyhold_return_pct']:.2f}% | "
             f"{row['excess_return_pct']:.2f}% | "
