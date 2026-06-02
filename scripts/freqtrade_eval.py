@@ -24,7 +24,6 @@ DEFAULT_ALLOCATION = [333.0, 333.0, 334.0]
 
 @dataclass(frozen=True)
 class BacktestRun:
-    mode: str
     pair: str
     wallet: float
     directory: Path
@@ -43,14 +42,9 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     runs: list[BacktestRun] = []
-    if args.mode in {"single", "both"}:
-        for pair, wallet in zip(pairs, allocation):
-            run_dir = output_dir / "single" / safe_name(pair)
-            runs.append(run_backtest(args, [pair], wallet, run_dir, mode="single", pair=pair))
-
-    if args.mode in {"multi", "both"}:
-        run_dir = output_dir / "multi"
-        runs.append(run_backtest(args, pairs, sum(allocation), run_dir, mode="multi", pair="PORTFOLIO"))
+    for pair, wallet in zip(pairs, allocation):
+        run_dir = output_dir / "single" / safe_name(pair)
+        runs.append(run_backtest(args, [pair], wallet, run_dir, pair=pair))
 
     rows: list[dict] = []
     trade_rows: list[dict] = []
@@ -63,15 +57,14 @@ def main() -> None:
             run=run,
             result=result,
             equity=equity,
-            pairs=pairs if run.mode == "multi" else [run.pair],
-            allocation=allocation if run.mode == "multi" else [run.wallet],
+            pairs=[run.pair],
+            allocation=[run.wallet],
         ))
         trade_rows.extend(extract_trade_rows(run, result.trades))
-        if run.mode == "single":
-            single_equities.append(equity.rename(columns={
-                "equity": f"{run.pair}:equity",
-                "cash_value": f"{run.pair}:cash",
-            })[["date", f"{run.pair}:equity", f"{run.pair}:cash"]])
+        single_equities.append(equity.rename(columns={
+            "equity": f"{run.pair}:equity",
+            "cash_value": f"{run.pair}:cash",
+        })[["date", f"{run.pair}:equity", f"{run.pair}:cash"]])
 
     if single_equities:
         rows.append(summarize_fixed_single_portfolio(
@@ -105,7 +98,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report-window", default="20260301-20260601")
     parser.add_argument("--pairs", nargs="+", default=DEFAULT_PAIRS)
     parser.add_argument("--allocation", nargs="+", type=float, default=DEFAULT_ALLOCATION)
-    parser.add_argument("--mode", choices=["single", "multi", "both"], default="both")
     parser.add_argument("--cache", default="none")
     parser.add_argument("--output-dir", default="results/freqtrade_eval")
     parser.add_argument("--run-id", default="")
@@ -120,13 +112,12 @@ def run_backtest(
     wallet: float,
     run_dir: Path,
     *,
-    mode: str,
     pair: str,
 ) -> BacktestRun:
     run_dir.mkdir(parents=True, exist_ok=True)
     if args.no_run:
         result_zip = latest_result_zip(run_dir)
-        return BacktestRun(mode=mode, pair=pair, wallet=wallet, directory=run_dir, result_zip=result_zip)
+        return BacktestRun(pair=pair, wallet=wallet, directory=run_dir, result_zip=result_zip)
 
     cmd = [
         sys.executable,
@@ -169,7 +160,7 @@ def run_backtest(
         if completed.returncode != 0:
             print_log_tail(log_path)
             raise subprocess.CalledProcessError(completed.returncode, cmd)
-    return BacktestRun(mode=mode, pair=pair, wallet=wallet, directory=run_dir, result_zip=latest_result_zip(run_dir))
+    return BacktestRun(pair=pair, wallet=wallet, directory=run_dir, result_zip=latest_result_zip(run_dir))
 
 
 def latest_result_zip(directory: Path) -> Path:
@@ -246,7 +237,7 @@ def summarize_run(
     bh_window = buyhold_return(pairs, allocation, window["date"].iloc[0], window["date"].iloc[-1], args)
     trades = result.trades
     return {
-        "mode": run.mode,
+        "mode": "single",
         "pair": run.pair,
         "timerange": args.timerange,
         "report_window": args.report_window,
@@ -450,7 +441,7 @@ def extract_trade_rows(run: BacktestRun, trades: list[dict]) -> list[dict]:
     rows = []
     for trade in trades:
         rows.append({
-            "mode": run.mode,
+            "mode": "single",
             "run_pair": run.pair,
             "pair": trade.get("pair"),
             "open_date": trade.get("open_date") or trade.get("open_date_utc"),
