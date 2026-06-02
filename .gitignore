@@ -9,3 +9,7 @@ __pycache__/
 .ruff_cache/
 
 results/
+freqtrade_user_data/backtest_results/
+freqtrade_user_data/data/
+freqtrade_user_data/logs/
+freqtrade_user_data/hyperopt_results/

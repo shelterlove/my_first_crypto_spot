@@ -1,4 +1,4 @@
-"""Small adapter between V2.6 target-position decisions and Freqtrade."""
+"""Small adapter between native target-position decisions and Freqtrade."""
 
 from __future__ import annotations
 
@@ -32,10 +32,11 @@ def build_target_position_decision(
     pair: str,
     dataframe: pd.DataFrame,
     current_position_pct: float,
-    strategy_name: str = "v2_6",
+    strategy_name: str = "v2_19B",
     capital: float = 100.0,
     reserve: float = 20.0,
     fee_rate: float = 0.001,
+    min_notional: float = 0.0,
 ) -> TargetPositionDecision:
     """Run the native strategy once and return a compact target-position decision."""
     if dataframe.empty:
@@ -44,7 +45,7 @@ def build_target_position_decision(
     latest = dataframe.iloc[-1]
     price = float(latest["close"])
     portfolio = _portfolio_for_pair(pair, price, capital, current_position_pct)
-    strategy = build_strategy(strategy_name, capital, reserve, fee_rate)
+    strategy = build_strategy(strategy_name, capital, reserve, fee_rate, min_notional=min_notional)
     setattr(strategy, "TARGET_ALLOC", {pair: 1.0})
 
     actions = strategy.compute_actions({pair: dataframe}, portfolio, {pair: price})

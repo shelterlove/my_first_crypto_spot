@@ -38,12 +38,13 @@ class CryptoSpotV26(IStrategy):
     stoploss = -0.99
     trailing_stop = False
     process_only_new_candles = True
-    use_exit_signal = False
+    use_exit_signal = True
 
     strategy_name = "v2_6"
     decision_capital = 100.0
     fee_rate = 0.001
     reserve = 20.0
+    min_notional = 0.0
     min_delta_pct = 0.02
 
     def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
@@ -58,15 +59,28 @@ class CryptoSpotV26(IStrategy):
         if dataframe.empty:
             return dataframe
 
-        decision = self._decision(metadata["pair"], dataframe, current_position_pct=0.0)
-        if decision.action == "buy" and decision.delta_pct >= self.min_delta_pct:
-            dataframe.loc[dataframe.index[-1], "enter_long"] = 1
-            dataframe.loc[dataframe.index[-1], "enter_tag"] = decision.reason[:255]
+        for idx in range(self.startup_candle_count, len(dataframe)):
+            frame = dataframe.iloc[: idx + 1]
+            decision = self._decision(metadata["pair"], frame, current_position_pct=0.0)
+            if decision.action == "buy" and decision.delta_pct >= self.min_delta_pct:
+                row_index = dataframe.index[idx]
+                dataframe.loc[row_index, "enter_long"] = 1
+                dataframe.loc[row_index, "enter_tag"] = decision.reason[:255]
         return dataframe
 
     def populate_exit_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
         dataframe["exit_long"] = 0
         dataframe["exit_tag"] = ""
+        if dataframe.empty:
+            return dataframe
+
+        for idx in range(self.startup_candle_count, len(dataframe)):
+            frame = dataframe.iloc[: idx + 1]
+            decision = self._decision(metadata["pair"], frame, current_position_pct=1.0)
+            if decision.action == "sell" and abs(decision.delta_pct) >= self.min_delta_pct:
+                row_index = dataframe.index[idx]
+                dataframe.loc[row_index, "exit_long"] = 1
+                dataframe.loc[row_index, "exit_tag"] = decision.reason[:255]
         return dataframe
 
     def custom_stake_amount(
@@ -131,6 +145,7 @@ class CryptoSpotV26(IStrategy):
             capital=self.decision_capital,
             reserve=self.reserve,
             fee_rate=self.fee_rate,
+            min_notional=self.min_notional,
         )
 
     def _latest_dataframe(self, pair: str) -> pd.DataFrame | None:
