@@ -1,54 +1,42 @@
 # Evaluation Metric Policy
 
-The evaluation layer is split into two tiers.
+The evaluation layer should be small enough to run often and rich enough to
+explain failures.
 
-## Research Mode
+## Primary Metrics
 
-Research mode is for screening new candidates. It should stay small and fast.
+Keep these in the main review:
 
-Keep:
+- total return;
+- Buy & Hold return;
+- excess return;
+- win rate versus Buy & Hold;
+- max drawdown;
+- average exposure;
+- trade count.
 
-- `model_review.md/json`: primary decision summary.
-- `summary_metrics.csv`: score, return, excess return, win rate, drawdown, exposure, trades, turnover.
-- `benchmark_metrics.csv`: Buy & Hold, exposure-matched Buy & Hold, simple EMA168 filter.
-- `regime_performance_report.csv`: BULL / sideways / BEAR behavior.
-- `raw_backtest_results.csv`: window-level audit rows.
-- `strategy_manifest.json`, `config_snapshot.json`, `experiment_metadata.json`: reproducibility.
+These metrics directly answer whether the strategy earns enough, controls risk,
+uses capital as intended, and trades at a realistic frequency.
 
-Do not write in research mode:
+## Required Scenarios
 
-- Full action logs or equity curves.
-- Final score component CSV. It overlaps with `model_review` and `summary_metrics`.
-- Risk distribution statistics such as VaR, skewness, and kurtosis.
-- Signal attribution, blocked-buy, sell-too-early, or per-bar diagnostics.
+Every serious candidate should be reviewed in two shapes:
 
-## Complete Mode
+- per-pair fixed allocation for BTC, ETH, and BNB;
+- equal-weight aggregate built from those independent sleeves.
 
-Complete mode is for candidates that survive research screening.
+Promising candidates should also run rolling windows with multiple start dates
+and lengths. Rolling windows are for stability review, not first-pass screening.
 
-Keep additional complete-only files:
+## Excluded From Primary Review
 
-- `action_logs.csv.gz` and `equity_curves.csv.gz`.
-- `early_exposure_report.csv`: first 30/60/120 day exposure and return capture.
-- Signal attribution and state transition reports.
-- Buy-blocked and sell-too-early diagnostics.
-- Timestamp/accounting audits.
-- Cost and warmup sensitivity reports.
-- HTML report.
+Do not keep duplicate or low-actionability metrics in the main report:
 
-## Metric Selection Rules
+- score component dumps;
+- skewness, kurtosis, and VaR-style statistics;
+- large per-bar diagnostics;
+- full action logs for every screening run;
+- shared-wallet portfolio comparisons.
 
-A metric should remain in the primary review only if it affects a decision:
-
-- Does the strategy beat Buy & Hold often enough? Use median excess and win rate.
-- Does it reduce drawdown? Use mean max drawdown and drawdown reduction.
-- Is the return retained while reducing risk? Use retention ratio and mean/median return.
-- Is it deployable? Use trade count, turnover, and explicit execution assumptions.
-- Does it fail in a specific market state? Use regime breakdown.
-- Does it miss early trend participation? Use `early_exposure_report.csv` in complete mode.
-
-Metrics that mostly duplicate these should stay out of research output.
-
-## Execution Assumptions
-
-`cost.min_notional` is explicit. The backtest uses normalized capital, so a fixed exchange minimum can materially change strategy behavior. For percentage-style research, keep it low or zero; for deployment rehearsal, set it to the exchange/order-size constraint.
+Detailed trade logs and diagnostics are useful only when a candidate is worth
+investigating or when a specific losing window needs explanation.

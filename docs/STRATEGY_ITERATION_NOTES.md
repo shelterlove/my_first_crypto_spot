@@ -1,23 +1,29 @@
 # Strategy Iteration Notes
 
-## 2026-06-02
+## Current Reference
 
-Current reference candidate: `v2_12A`.
+The current reference candidate is `v2_19B`, deployed through the thin
+Freqtrade shell `CryptoSpotV219B`.
 
-Main diagnosis from the complete `v2_12A` run:
+## Core Diagnosis
 
-- BULL underperformance is concentrated in windows that are underexposed early.
-- In BULL loser windows, average exposure is lower in the first 30/60/120 days, but higher late in the window.
-- This means the main drag is not a simple lack of long-term exposure. It is delayed participation near the start of major uptrends.
-- The delay is often caused by BEAR-to-MIXED confirmation and BEAR `max_buy=0.05`, where the intended small buy can fall below the minimum trade notional.
+The strategy is not mainly limited by prediction complexity. Its main risk is
+participation timing:
 
-Tested and rejected:
+- it should stay invested enough during durable uptrends;
+- it should avoid defensive rules that repeatedly sell normal bull-market
+  pullbacks;
+- it should not fix underperformance with coin-specific exceptions;
+- it should keep BEAR protection simple and explicit.
 
-- `v2_16A/B/C`: limited starter targets during early reversal. No material effect because the existing MIXED target is already high once MIXED is confirmed.
-- `v2_17A/B/C`: globally faster MIXED confirmation. Hurt screening score, indicating the existing MIXED confirmation filters useful false recoveries.
-- `v2_18A/B/C`: conditional fast BEAR-to-MIXED confirmation on strong reversal. Did not improve screening score, so the earlier entry cost outweighed the captured upside.
+BNB weakness in recent Freqtrade tests is not a reason to add BNB-only rules.
+The correct next step is to inspect whether the same rule creates late entries,
+early exits, or long cash periods across multiple assets and windows.
 
-Conclusion:
+## Iteration Rules
 
-- Do not promote earlier BEAR-to-MIXED entry rules without stronger evidence.
-- The next useful work should focus on diagnostics, not new rules: identify whether early underexposure happens mostly after true cycle lows, after mid-cycle corrections, or because of the minimum notional / BEAR buy-size interaction.
+- Do not optimize for a single symbol.
+- Prefer rules that are defensible before seeing the backtest.
+- Test new ideas with fixed-allocation per-pair results first.
+- Promote only after rolling windows show stable behavior.
+- Keep rejected experiments out of active strategy code.

@@ -1,4 +1,4 @@
-"""Freqtrade shell for the native crypto_spot_v1 v2_6 strategy."""
+"""Base Freqtrade shell for native crypto_spot_v1 target-position strategies."""
 
 from __future__ import annotations
 
@@ -27,6 +27,8 @@ from crypto_spot_v1.freqtrade_adapter import build_native_signal_frame
 
 
 class CryptoSpotV26(IStrategy):
+    """Legacy-named base shell; subclasses select the native strategy version."""
+
     INTERFACE_VERSION = 3
 
     timeframe = "1d"

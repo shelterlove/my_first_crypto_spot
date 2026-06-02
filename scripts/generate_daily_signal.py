@@ -23,7 +23,7 @@ from crypto_spot_v1.strategy_rebalance import PortfolioState, PositionState
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--strategy", default="v2_6", help="Registered strategy name.")
+    parser.add_argument("--strategy", default="v2_19B", help="Registered strategy name.")
     parser.add_argument("--config", default="configs/backtest_v1.json", help="Backtest config path.")
     parser.add_argument("--output-dir", default="results/daily_signals", help="Signal output directory.")
     parser.add_argument(
