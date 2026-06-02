@@ -133,7 +133,7 @@ class CryptoSpotV26(IStrategy):
     ) -> float | None:
         pair = trade.pair
         dataframe = self._latest_dataframe(pair)
-        if dataframe is None or self._already_adjusted_this_candle(trade, dataframe):
+        if dataframe is None or self._already_adjusted_this_candle(trade, current_time):
             return None
 
         action, delta_pct = self._latest_native_action(dataframe)
@@ -169,11 +169,10 @@ class CryptoSpotV26(IStrategy):
         return float(total or fallback)
 
     @staticmethod
-    def _already_adjusted_this_candle(trade: Trade, dataframe: pd.DataFrame) -> bool:
+    def _already_adjusted_this_candle(trade: Trade, current_time) -> bool:
         if not hasattr(trade, "date_last_filled_utc"):
             return False
         last_fill = getattr(trade, "date_last_filled_utc", None)
         if last_fill is None:
             return False
-        candle_time = pd.to_datetime(dataframe.iloc[-1].get("timestamp", dataframe.index[-1]), utc=True)
-        return pd.to_datetime(last_fill, utc=True) >= candle_time
+        return pd.to_datetime(last_fill, utc=True) >= pd.to_datetime(current_time, utc=True)

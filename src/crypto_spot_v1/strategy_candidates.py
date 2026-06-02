@@ -2268,3 +2268,78 @@ class V219BStrategy(V212AStrategy):
         if adjusted < self.MIN_BUY_PCT:
             return 0.0, self._join_guard(guard, f"{self.VERSION_LABEL}_tiny_buy_skipped")
         return adjusted, guard
+
+
+class V220AStrategy(V219BStrategy):
+    """V2.20A: soften target-reduce trims while the long structure is intact."""
+
+    VERSION_LABEL = "v2_20A"
+    CONSTRUCTIVE_MIXED_MAX_SELL = 0.10
+    CONSTRUCTIVE_MIXED_MIN_THRESHOLD = 0.10
+
+    @property
+    def name(self) -> str:
+        return "v2_20A"
+
+    def _adjust_sell_execution(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        drawdown_risk: int,
+        risk_score: int,
+        sell_setup: str,
+        sell_threshold: float,
+        max_sell: float,
+    ) -> tuple[float, float, str]:
+        threshold, adjusted_max_sell, guard = super()._adjust_sell_execution(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            drawdown_risk=drawdown_risk,
+            risk_score=risk_score,
+            sell_setup=sell_setup,
+            sell_threshold=sell_threshold,
+            max_sell=max_sell,
+        )
+        if sell_setup == "target-reduce" and self._is_constructive_mixed_trim(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            risk_score=risk_score,
+        ):
+            return (
+                max(threshold, self.CONSTRUCTIVE_MIXED_MIN_THRESHOLD),
+                min(adjusted_max_sell, self.CONSTRUCTIVE_MIXED_MAX_SELL),
+                self._join_guard(guard, f"{self.VERSION_LABEL}_constructive_mixed_trim_softened"),
+            )
+        return threshold, adjusted_max_sell, guard
+
+    @staticmethod
+    def _is_constructive_mixed_trim(
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        risk_score: int,
+    ) -> bool:
+        if raw_state != "MIXED" or confirmed_state != "MIXED":
+            return False
+        if price <= 0 or trend_risk > 2 or risk_score > 2:
+            return False
+        if str(latest.get("btc_regime", "")) == "BEAR":
+            return False
+
+        ema72 = latest.get("ema72")
+        ema168 = latest.get("ema168")
+        ema168_slope = latest.get("ema168_slope")
+        if pd.isna(ema72) or pd.isna(ema168) or pd.isna(ema168_slope):
+            return False
+        return bool(ema72 > ema168 and ema168_slope > 0)
