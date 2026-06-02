@@ -14,6 +14,79 @@ import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASE = PROJECT_ROOT / "results" / "freqtrade_eval"
+LABELS = {
+    "score": "综合评分",
+    "decision": "评审结论",
+    "grade": "等级",
+    "component": "评分项",
+    "weight": "权重",
+    "score_0_100": "单项得分",
+    "weighted_points": "加权得分",
+    "detail": "计算细节",
+    "check": "检查项",
+    "pass": "是否通过",
+    "purpose": "用途",
+    "mode": "模式",
+    "pair": "币种",
+    "metric": "指标",
+    "candidate": "候选策略",
+    "reference": "参考策略",
+    "delta": "变化",
+    "windows": "窗口数",
+    "window_days": "窗口天数",
+    "window_start": "开始日期",
+    "window_end": "结束日期",
+    "total_return_pct": "策略收益",
+    "buyhold_total_return_pct": "买入持有收益",
+    "total_excess_pct": "超额收益",
+    "portfolio_return_pct": "组合收益",
+    "buyhold_return_pct": "买入持有收益",
+    "excess_return_pct": "超额收益",
+    "mean_return_pct": "平均策略收益",
+    "mean_buyhold_pct": "平均买入持有收益",
+    "mean_excess_pct": "平均超额",
+    "median_excess_pct": "中位超额",
+    "win_rate_pct": "胜率",
+    "worst_excess_pct": "最差超额",
+    "best_excess_pct": "最佳超额",
+    "max_drawdown_pct": "最大回撤",
+    "worst_drawdown_pct": "最差回撤",
+    "mean_max_drawdown_pct": "平均最大回撤",
+    "avg_exposure_pct": "平均仓位",
+    "mean_exposure_pct": "平均仓位",
+    "trade_count": "交易次数",
+    "mean_trade_count": "平均交易次数",
+}
+VALUE_LABELS = {
+    "long_term_excess": "长期超额",
+    "rolling_stability": "滚动稳定性",
+    "risk_control": "风险控制",
+    "trade_quality": "交易质量",
+    "logic_consistency": "逻辑一致性",
+    "aggregate_excess_positive": "组合超额为正",
+    "all_pairs_full_excess_positive": "所有单币全周期超额为正",
+    "max_drawdown_not_extreme": "最大回撤未超过极限",
+    "rolling_available": "滚动窗口数据存在",
+    "full_excess_not_worse_than_reference": "全周期超额不弱于参考版本",
+    "max_drawdown_not_materially_worse": "最大回撤未显著恶化",
+    "rolling_median_excess_not_worse": "滚动中位超额未恶化",
+    "rolling_win_rate_not_worse": "滚动胜率未恶化",
+    "worst_rolling_excess_not_worse": "最差滚动超额未恶化",
+    "promote_reference": "晋级为参考版本",
+    "paper_trade_candidate": "可进入模拟盘候选",
+    "research_only": "仅保留研究",
+    "reject": "拒绝",
+    "full_excess_pct": "全周期超额",
+    "standard_median_excess_pct": "标准滚动中位超额",
+    "standard_worst_excess_pct": "标准滚动最差超额",
+    "max_drawdown_pct": "最大回撤",
+    "manual review score": "人工逻辑评分",
+    "True": "通过",
+    "False": "未通过",
+    "single": "单币",
+    "single_fixed_aggregate": "固定分仓组合",
+    "PORTFOLIO": "组合",
+}
 
 
 def main() -> None:
@@ -342,23 +415,23 @@ def render_html(review: dict[str, Any], candidate: Evaluation, reference: Evalua
     strategy = esc(review["strategy"])
     sections = [
         "<!doctype html><html><head><meta charset='utf-8'>",
-        f"<title>{strategy} Freqtrade Review</title>",
+        f"<title>{strategy} Freqtrade 策略评审</title>",
         style(),
         "</head><body><main>",
-        f"<header><h1>{strategy} Freqtrade Review</h1><p>Fixed-allocation per-pair and aggregate review.</p></header>",
+        f"<header><h1>{strategy} Freqtrade 策略评审</h1><p>固定分仓单币评估 + 等权组合评估。超额收益使用百分点（pp）表示。</p></header>",
         score_cards(review),
-        table_section("Score Components", pd.DataFrame(review["components"])),
-        table_section("Promotion Checks", pd.DataFrame(review["checks"])),
+        table_section("评分拆解", pd.DataFrame(review["components"])),
+        table_section("晋级检查", pd.DataFrame(review["checks"])),
         scoring_policy_section(),
-        table_section("Baseline: Aggregate And Pairs", format_baseline(candidate.summary)),
-        rolling_section("Quick Rolling", candidate.quick, candidate.quick_pairs),
-        rolling_section("Standard Rolling", candidate.standard, candidate.standard_pairs),
+        table_section("全周期表现：组合与单币", format_baseline(candidate.summary)),
+        rolling_section("快速滚动回测", candidate.quick, candidate.quick_pairs),
+        rolling_section("标准滚动回测", candidate.standard, candidate.standard_pairs),
         worst_windows_section(candidate.standard if not candidate.standard.empty else candidate.quick),
     ]
     if reference is not None:
         sections.append(reference_delta_section(candidate, reference))
     sections.extend([
-        "<section><h2>Metric Notes</h2><p><strong>Excess return</strong> means strategy return minus Buy & Hold return. A value below -100% means the strategy lagged Buy & Hold by more than 100 percentage points; it does not mean the strategy lost more than 100%.</p></section>",
+        "<section><h2>指标说明</h2><p><strong>超额收益</strong> = 策略收益 - 买入持有收益，单位是百分点（pp）。例如最差超额 -246.76 pp 表示策略比买入持有少赚 246.76 个百分点，并不是策略亏损超过 100%。</p></section>",
         "</main></body></html>",
     ])
     return "\n".join(sections)
@@ -367,12 +440,12 @@ def render_html(review: dict[str, Any], candidate: Evaluation, reference: Evalua
 def score_cards(review: dict[str, Any]) -> str:
     summary = review["summary"]
     cards = [
-        ("Score", f"{review['score']:.2f}", review["grade"]),
-        ("Decision", review["decision"], ""),
-        ("Full Excess", fmt_pp(summary["total_excess_pct"]), "percentage points"),
-        ("Max Drawdown", fmt_pct(summary["max_drawdown_pct"]), ""),
-        ("Rolling Median Excess", fmt_pp(summary["rolling_median_excess_pct"]), "percentage points"),
-        ("Worst Rolling Excess", fmt_pp(summary["rolling_worst_excess_pct"]), "percentage points"),
+        ("综合评分", f"{review['score']:.2f}", review["grade"]),
+        ("评审结论", translate_value(review["decision"]), ""),
+        ("全周期超额", fmt_pp(summary["total_excess_pct"]), "百分点"),
+        ("最大回撤", fmt_pct(summary["max_drawdown_pct"]), ""),
+        ("滚动中位超额", fmt_pp(summary["rolling_median_excess_pct"]), "百分点"),
+        ("最差滚动超额", fmt_pp(summary["rolling_worst_excess_pct"]), "百分点"),
     ]
     body = "".join(
         f"<div class='card'><div class='label'>{esc(label)}</div><div class='value'>{esc(value)}</div><div class='hint'>{esc(hint)}</div></div>"
@@ -405,7 +478,7 @@ def rolling_section(title: str, rolling: pd.DataFrame, pairs: pd.DataFrame) -> s
     return "\n".join([
         f"<section><h2>{esc(title)}</h2>",
         df_to_html(agg),
-        "<h3>By Pair</h3>",
+        "<h3>单币汇总</h3>",
         df_to_html(pairs) if not pairs.empty else "<p>No pair summary.</p>",
         "</section>",
     ])
@@ -418,7 +491,7 @@ def worst_windows_section(rolling: pd.DataFrame) -> str:
         "window_days", "window_start", "window_end", "portfolio_return_pct",
         "buyhold_return_pct", "excess_return_pct", "max_drawdown_pct", "avg_exposure_pct",
     ]
-    return table_section("Worst Rolling Windows", rolling.sort_values("excess_return_pct").head(12)[cols])
+    return table_section("最差滚动窗口", rolling.sort_values("excess_return_pct").head(12)[cols])
 
 
 def reference_delta_section(candidate: Evaluation, reference: Evaluation) -> str:
@@ -447,7 +520,7 @@ def reference_delta_section(candidate: Evaluation, reference: Evaluation) -> str
             "reference": fmt_pp(reference.standard["excess_return_pct"].min()),
             "delta": fmt_pp(candidate.standard["excess_return_pct"].min() - reference.standard["excess_return_pct"].min()),
         }])
-    return table_section("Reference Delta", pd.DataFrame(rows))
+    return table_section("相对参考版本变化", pd.DataFrame(rows))
 
 
 def table_section(title: str, df: pd.DataFrame) -> str:
@@ -457,7 +530,7 @@ def table_section(title: str, df: pd.DataFrame) -> str:
 def df_to_html(df: pd.DataFrame) -> str:
     if df.empty:
         return "<p>No data.</p>"
-    headers = "".join(f"<th>{esc(str(col))}</th>" for col in df.columns)
+    headers = "".join(f"<th>{esc(label(str(col)))}</th>" for col in df.columns)
     rows = []
     for _, row in df.iterrows():
         rows.append("<tr>" + "".join(f"<td>{esc(format_value(value, str(col)))}</td>" for col, value in row.items()) + "</tr>")
@@ -478,18 +551,18 @@ def format_value(value: Any, col: str) -> str:
         if any(token in col for token in ("pct", "rate", "drawdown", "return", "exposure")):
             return f"{value:.2f}%"
         return f"{value:.2f}"
-    return str(value)
+    return translate_value(str(value))
 
 
 def scoring_policy_section() -> str:
     rows = pd.DataFrame([
-        {"component": "long_term_excess", "weight": 25, "purpose": "Full-period excess, pair coverage, weakest pair excess"},
-        {"component": "rolling_stability", "weight": 30, "purpose": "Rolling median excess, win rate, worst excess, pair medians"},
-        {"component": "risk_control", "weight": 25, "purpose": "Aggregate, pair, and rolling max drawdown discipline"},
-        {"component": "trade_quality", "weight": 10, "purpose": "Trade frequency and average exposure sanity"},
-        {"component": "logic_consistency", "weight": 10, "purpose": "Manual score for whether the rule fits the long-term strategy philosophy"},
+        {"component": "long_term_excess", "weight": 25, "purpose": "全周期超额、单币覆盖度、最弱单币超额"},
+        {"component": "rolling_stability", "weight": 30, "purpose": "滚动中位超额、胜率、最差超额、单币中位超额"},
+        {"component": "risk_control", "weight": 25, "purpose": "组合、单币、滚动窗口的最大回撤纪律"},
+        {"component": "trade_quality", "weight": 10, "purpose": "交易频率和平均仓位是否合理"},
+        {"component": "logic_consistency", "weight": 10, "purpose": "人工判断规则是否符合长线策略哲学"},
     ])
-    return table_section("Scoring Policy", rows)
+    return table_section("评分规则", rows)
 
 
 def timerange_years(timerange: str) -> float:
@@ -511,6 +584,40 @@ def fmt_pct(value: Any) -> str:
 
 def fmt_pp(value: Any) -> str:
     return "" if value is None else f"{float(value):.2f} pp"
+
+
+def label(value: str) -> str:
+    return LABELS.get(value, value)
+
+
+def translate_value(value: str) -> str:
+    if value in VALUE_LABELS:
+        return VALUE_LABELS[value]
+    replacements = {
+        "aggregate_excess": "组合超额",
+        "excess_vs_bh": "超额/BH",
+        "pair_positive": "正超额币种占比",
+        "min_pair_excess": "最弱单币超额",
+        "windows": "窗口数",
+        "median_excess": "中位超额",
+        "win_rate": "胜率",
+        "worst_excess": "最差超额",
+        "pair_medians": "单币中位超额",
+        "aggregate_dd": "组合回撤",
+        "worst_pair_dd": "最差单币回撤",
+        "worst_rolling_dd": "最差滚动回撤",
+        "trades_per_pair_year": "单币年均交易次数",
+        "mean_exposure": "平均仓位",
+        "candidate": "候选",
+        "reference": "参考",
+        "delta": "变化",
+        "percentage points": "百分点",
+        "manual review score": "人工逻辑评分",
+    }
+    out = value
+    for src, dst in replacements.items():
+        out = out.replace(src, dst)
+    return out
 
 
 def clamp(value: float, low: float, high: float) -> float:

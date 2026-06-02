@@ -54,6 +54,33 @@ The score is not a substitute for the promotion rules below. It is a compact
 summary used to prioritize review. A candidate still fails if a critical
 promotion check fails.
 
+Component formulas in `scripts/review_freqtrade_eval.py`:
+
+- `long_term_excess`
+  - `aggregate_score = clamp((aggregate_excess / max(abs(aggregate_bh), 100)) / 0.50 * 100)`
+  - `pair_positive = percent of BTC/ETH/BNB with positive full-period excess`
+  - `min_pair_score = clamp(min_pair_excess / 100 * 100)`
+  - final: `0.55 * aggregate_score + 0.25 * pair_positive + 0.20 * min_pair_score`
+- `rolling_stability`
+  - `median_score = clamp((rolling_median_excess + 50) / 50 * 100)`
+  - `win_score = clamp(rolling_win_rate / 55 * 100)`
+  - `worst_score = clamp((worst_rolling_excess + 300) / 300 * 100)`
+  - `pair_score = mean(clamp((pair_median_excess + 40) / 60 * 100))`
+  - final: `0.35 * median_score + 0.25 * win_score + 0.25 * worst_score + 0.15 * pair_score`
+- `risk_control`
+  - `dd_score = clamp((75 - abs(aggregate_dd)) / 35 * 100)`
+  - `pair_score = clamp((75 - abs(worst_pair_dd)) / 35 * 100)`
+  - `rolling_score = clamp((75 - abs(worst_rolling_dd)) / 35 * 100)`
+  - final: `0.45 * dd_score + 0.30 * pair_score + 0.25 * rolling_score`
+- `trade_quality`
+  - full score if each pair averages `1` to `12` trades per year
+  - otherwise penalize distance from about `8` trades per pair per year
+  - exposure score penalizes distance from `60%` average exposure
+  - final: `0.65 * trade_score + 0.35 * exposure_score`
+- `logic_consistency`
+  - manual score, default `85`, for whether the rule is coherent before seeing
+    the backtest result.
+
 `excess_return_pct` is measured in percentage points:
 
 ```text
