@@ -25,5 +25,7 @@ early exits, or long cash periods across multiple assets and windows.
 - Do not optimize for a single symbol.
 - Prefer rules that are defensible before seeing the backtest.
 - Test new ideas with fixed-allocation per-pair results first.
-- Promote only after rolling windows show stable behavior.
+- Promote only after rolling windows show stable behavior under
+  `docs/EVALUATION_METRIC_POLICY.md`.
+- Treat recent-window results as diagnostics, not promotion evidence.
 - Keep rejected experiments out of active strategy code.
