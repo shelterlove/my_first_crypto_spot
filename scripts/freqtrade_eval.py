@@ -152,7 +152,9 @@ def run_rolling_eval(args: argparse.Namespace, output_dir: Path) -> None:
     if not aggregate_rows:
         raise SystemExit("No rolling windows generated. Check --timerange and rolling settings.")
 
-    pd.DataFrame(detail_rows).to_csv(output_dir / "rolling_detail.csv", index=False)
+    detail = pd.DataFrame(detail_rows)
+    detail.to_csv(output_dir / "rolling_detail.csv", index=False)
+    write_rolling_pair_summary(detail, output_dir)
     rolling = pd.DataFrame(aggregate_rows)
     rolling.to_csv(output_dir / "rolling_summary.csv", index=False)
     (output_dir / "rolling_report.md").write_text(render_rolling_report(args, aggregate_rows), encoding="utf-8")
@@ -614,6 +616,10 @@ def trade_date(trade: dict, field: str) -> pd.Timestamp | None:
 def extract_trade_rows(run: BacktestRun, trades: list[dict]) -> list[dict]:
     rows = []
     for trade in trades:
+        orders = list(trade.get("orders") or [])
+        entry_orders = [order for order in orders if order.get("ft_is_entry")]
+        exit_orders = [order for order in orders if not order.get("ft_is_entry")]
+        exit_categories = [classify_exit_tag(str(order.get("ft_order_tag", ""))) for order in exit_orders]
         rows.append({
             "mode": "single",
             "run_pair": run.pair,
@@ -623,12 +629,68 @@ def extract_trade_rows(run: BacktestRun, trades: list[dict]) -> list[dict]:
             "profit_pct": float(trade.get("profit_ratio") or 0.0) * 100,
             "profit_abs": trade.get("profit_abs"),
             "stake_amount": trade.get("stake_amount"),
+            "max_stake_amount": trade.get("max_stake_amount"),
+            "entry_count": len(entry_orders),
+            "exit_count": len(exit_orders),
+            "target_reduce_exit_count": exit_categories.count("target_reduce"),
+            "risk_reduce_exit_count": exit_categories.count("risk_reduce"),
+            "trend_break_exit_count": exit_categories.count("trend_break"),
+            "force_exit_count": exit_categories.count("force_exit"),
+            "entry_dates": order_dates(entry_orders),
+            "exit_dates": order_dates(exit_orders),
+            "exit_categories": ",".join(exit_categories),
             "open_rate": trade.get("open_rate"),
             "close_rate": trade.get("close_rate"),
             "enter_tag": trade.get("enter_tag"),
             "exit_reason": trade.get("exit_reason"),
         })
     return rows
+
+
+def classify_exit_tag(tag: str) -> str:
+    if "target-reduce" in tag:
+        return "target_reduce"
+    if "risk-reduce" in tag:
+        return "risk_reduce"
+    if "trend-break" in tag:
+        return "trend_break"
+    if "force_exit" in tag:
+        return "force_exit"
+    if "partial_exit" in tag:
+        return "partial_exit_marker"
+    return "other"
+
+
+def order_dates(orders: list[dict]) -> str:
+    dates: list[str] = []
+    for order in orders:
+        value = order.get("order_filled_timestamp")
+        if value is None:
+            continue
+        dates.append(pd.to_datetime(value, unit="ms", utc=True).strftime("%Y-%m-%d"))
+    return ",".join(dates)
+
+
+def write_rolling_pair_summary(detail: pd.DataFrame, output_dir: Path) -> None:
+    if detail.empty:
+        return
+    pairs = detail[detail["pair"] != "PORTFOLIO"].copy()
+    if pairs.empty:
+        return
+    summary = pairs.groupby("pair", sort=True).agg(
+        windows=("excess_return_pct", "count"),
+        mean_return_pct=("return_pct", "mean"),
+        mean_buyhold_pct=("buyhold_return_pct", "mean"),
+        mean_excess_pct=("excess_return_pct", "mean"),
+        median_excess_pct=("excess_return_pct", "median"),
+        win_rate_pct=("excess_return_pct", lambda values: (values > 0).mean() * 100),
+        worst_excess_pct=("excess_return_pct", "min"),
+        best_excess_pct=("excess_return_pct", "max"),
+        mean_max_drawdown_pct=("max_drawdown_pct", "mean"),
+        mean_exposure_pct=("avg_exposure_pct", "mean"),
+        mean_trade_count=("trade_count", "mean"),
+    ).reset_index()
+    summary.to_csv(output_dir / "rolling_pair_summary.csv", index=False)
 
 
 def safe_name(pair: str) -> str:
@@ -729,8 +791,10 @@ def render_rolling_report(args: argparse.Namespace, rows: list[dict]) -> str:
         f"- Mean return: `{frame['portfolio_return_pct'].mean():.2f}%`",
         f"- Median return: `{frame['portfolio_return_pct'].median():.2f}%`",
         f"- Mean Buy&Hold: `{frame['buyhold_return_pct'].mean():.2f}%`",
+        f"- Mean excess: `{frame['excess_return_pct'].mean():.2f}%`",
         f"- Median excess: `{frame['excess_return_pct'].median():.2f}%`",
         f"- Win rate vs Buy&Hold: `{(frame['excess_return_pct'] > 0).mean() * 100:.1f}%`",
+        f"- Worst excess: `{frame['excess_return_pct'].min():.2f}%`",
         f"- Worst return: `{frame['portfolio_return_pct'].min():.2f}%`",
         f"- Worst max drawdown: `{frame['max_drawdown_pct'].min():.2f}%`",
         "",
@@ -747,6 +811,22 @@ def render_rolling_report(args: argparse.Namespace, rows: list[dict]) -> str:
             f"{(group['excess_return_pct'] > 0).mean() * 100:.1f}% | "
             f"{group['portfolio_return_pct'].min():.2f}% | "
             f"{group['max_drawdown_pct'].min():.2f}% |"
+        )
+    lines.extend([
+        "",
+        "## Worst Windows",
+        "",
+        "| Window | Strategy | Buy&Hold | Excess | Max DD | Avg Exposure |",
+        "|---|---:|---:|---:|---:|---:|",
+    ])
+    for _, row in frame.sort_values("excess_return_pct").head(8).iterrows():
+        lines.append(
+            f"| {row['window_start']}~{row['window_end']} | "
+            f"{row['portfolio_return_pct']:.2f}% | "
+            f"{row['buyhold_return_pct']:.2f}% | "
+            f"{row['excess_return_pct']:.2f}% | "
+            f"{row['max_drawdown_pct']:.2f}% | "
+            f"{row['avg_exposure_pct']:.2f}% |"
         )
     lines.extend([
         "",
