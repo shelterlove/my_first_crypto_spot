@@ -86,7 +86,8 @@ def build_per_bar_diagnostics(
     initial_cash = float(config.get("capital", {}).get("initial", 100.0))
     reserve = float(config.get("capital", {}).get("reserve", 0.0))
     fee_rate = float(config.get("cost", {}).get("fee_rate", 0.0))
-    strategy = build_strategy(candidate_name, initial_cash, reserve, fee_rate)
+    min_notional = config.get("cost", {}).get("min_notional")
+    strategy = build_strategy(candidate_name, initial_cash, reserve, fee_rate, min_notional=min_notional)
     all_dfs = runner._inject_btc_regime()  # Evaluation-only reuse of runner data preparation.
 
     actions = actions_df.copy()
@@ -175,9 +176,24 @@ def build_per_bar_diagnostics(
             if action_side == "buy":
                 last_buy_call = call_count
 
+            target_gap = targets.get("target_position_pct_final", np.nan) - actual_pct if not math.isnan(actual_pct) else np.nan
+            estimated_buy_notional = _estimated_buy_notional(
+                strategy=strategy,
+                confirmed_state=confirmed_state,
+                target_gap=target_gap,
+                total_value=total_value,
+            ) if is_trading else 0.0
             can_buy = bool(is_trading and actual_pct < targets.get("target_position_pct_final", np.nan) - strategy.MIN_ADJUST_THRESHOLD)
             can_sell = bool(is_trading and actual_pct > targets.get("target_position_pct_final", np.nan) + strategy.MIN_ADJUST_THRESHOLD)
-            blocked = _blocked_flags(signal, confirmed_state, trend_risk, cooldown_remaining, reason, can_buy)
+            blocked = _blocked_flags(
+                signal=signal,
+                trend_risk=trend_risk,
+                cooldown_remaining=cooldown_remaining,
+                reason=reason,
+                can_buy=can_buy,
+                estimated_buy_notional=estimated_buy_notional,
+                min_notional=float(getattr(strategy, "min_notional", 0.0)),
+            )
             no_trade_reason = _no_trade_reason(action_side, can_buy, can_sell, blocked)
 
             btc_regime_ts = signal.get("btc_regime_timestamp") if is_trading else bar.get("btc_regime_timestamp")
@@ -264,7 +280,7 @@ def build_per_bar_diagnostics(
                 "buy_setup": setup if action_side == "buy" else "",
                 "sell_reason": setup if action_side == "sell" else "",
                 "action_reason": reason,
-                "target_gap": targets.get("target_position_pct_final", np.nan) - actual_pct if not math.isnan(actual_pct) else np.nan,
+                "target_gap": target_gap,
                 "trade_qty": action_row.get("quantity") if action_row else np.nan,
                 "trade_notional": action_row.get("notional") if action_row else np.nan,
                 "fee_cost": action_row.get("fee") if action_row else 0.0,
@@ -607,7 +623,30 @@ def _buy_cooldown(strategy, confirmed_state: str, risk_score: int) -> int:
     return strategy._compute_buy_cooldown(confirmed_state, cfg, int(risk_score))
 
 
-def _blocked_flags(signal: pd.Series, confirmed_state: str, trend_risk: float, cooldown_remaining: float, reason: str, can_buy: bool) -> dict[str, bool]:
+def _estimated_buy_notional(
+    *,
+    strategy,
+    confirmed_state: str,
+    target_gap: float,
+    total_value: float,
+) -> float:
+    if pd.isna(target_gap) or target_gap <= 0 or pd.isna(total_value) or total_value <= 0:
+        return 0.0
+    cfg = getattr(strategy, "STATE_CONFIG", {}).get(confirmed_state, {})
+    max_buy = float(cfg.get("max_buy", target_gap))
+    return float(total_value * min(target_gap, max_buy))
+
+
+def _blocked_flags(
+    *,
+    signal: pd.Series,
+    trend_risk: float,
+    cooldown_remaining: float,
+    reason: str,
+    can_buy: bool,
+    estimated_buy_notional: float,
+    min_notional: float,
+) -> dict[str, bool]:
     donchian_pos = signal.get("donchian_pos")
     atr_rank = signal.get("atr_pct_rank")
     return {
@@ -616,7 +655,7 @@ def _blocked_flags(signal: pd.Series, confirmed_state: str, trend_risk: float, c
         "blocked_by_volatility": bool(can_buy and not pd.isna(atr_rank) and atr_rank >= 0.90 and not reason),
         "blocked_by_trend_risk": bool(can_buy and not pd.isna(trend_risk) and trend_risk >= 2 and not reason),
         "blocked_by_btc_bear": bool(can_buy and signal.get("btc_regime") == "BEAR" and not reason),
-        "blocked_by_min_notional": False,
+        "blocked_by_min_notional": bool(can_buy and min_notional > 0 and estimated_buy_notional < min_notional and not reason),
     }
 
 

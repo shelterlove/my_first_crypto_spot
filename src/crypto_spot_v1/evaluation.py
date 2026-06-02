@@ -48,9 +48,6 @@ COMMON_RESULT_FILES = [
     "config_snapshot.json",
     "summary_metrics.csv",
     "benchmark_metrics.csv",
-    "risk_metrics.csv",
-    "active_management_metrics.csv",
-    "drawdown_metrics.csv",
     "final_score_report.csv",
     "html_report.html",
 ]
@@ -62,6 +59,7 @@ FULL_RESULT_FILES = [
     "signal_attribution_sell.csv",
     "state_transition_report.csv",
     "regime_performance_report.csv",
+    "early_exposure_report.csv",
     "bull_underperformance_window_analysis.csv",
     "risk_score_attribution_report.csv",
     "exposure_diagnostics_report.csv",
@@ -116,9 +114,6 @@ def save_evaluation_run(
     run_id = create_run_id(timestamp, candidate_name, mode)
     run_dir = output_root / "v1_eval_upgrade" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    if not research_mode:
-        (run_dir / "action_logs").mkdir(exist_ok=True)
-        (run_dir / "equity_curves").mkdir(exist_ok=True)
     diagnostics_enabled = (not research_mode) if diagnostics_enabled is None else diagnostics_enabled
     diagnostics_enabled = bool(diagnostics_enabled and not research_mode)
     config_snapshot = _effective_config(runner.config, candidate_name, mode, diagnostics_enabled)
@@ -132,7 +127,7 @@ def save_evaluation_run(
     raw_df.to_csv(run_dir / "raw_backtest_results.csv", index=False)
     summary_df.to_csv(run_dir / "summary_metrics.csv", index=False)
     if not research_mode:
-        _write_artifacts(run_dir, actions_df, equity_df, write_nested=True)
+        _write_artifacts(run_dir, actions_df, equity_df)
 
     metadata = _build_metadata(
         runner=runner,
@@ -167,10 +162,6 @@ def save_evaluation_run(
         drawdown_df = build_drawdown_metrics(equity_df, candidate_name)
 
     benchmark_df.to_csv(run_dir / "benchmark_metrics.csv", index=False)
-    if not research_mode:
-        risk_df.to_csv(run_dir / "risk_metrics.csv", index=False)
-        active_df.to_csv(run_dir / "active_management_metrics.csv", index=False)
-        drawdown_df.to_csv(run_dir / "drawdown_metrics.csv", index=False)
     reference_dir = _find_latest_reference_run(output_root, "v1_less_churn")
 
     diagnostic_outputs: dict[str, pd.DataFrame] = {}
@@ -257,7 +248,12 @@ def save_evaluation_run(
         mode=mode,
         config=config_snapshot,
     )
-    score_df.to_csv(run_dir / "final_score_report.csv", index=False)
+    if not research_mode:
+        score_df.to_csv(run_dir / "final_score_report.csv", index=False)
+        build_early_exposure_report(equity_df, raw_df, candidate_name).to_csv(
+            run_dir / "early_exposure_report.csv",
+            index=False,
+        )
     model_review = build_model_review(
         metadata=metadata,
         summary_df=summary_df,
@@ -394,6 +390,7 @@ def _artifact_policy_for_mode(mode: str | None) -> dict[str, list[str]]:
             "deferred_to_complete": [
                 "action_logs.csv.gz",
                 "equity_curves.csv.gz",
+                "early_exposure_report.csv",
                 "signal_attribution_buy.csv",
                 "signal_attribution_sell.csv",
                 "bull_underperformance_window_analysis.csv",
@@ -411,6 +408,7 @@ def _artifact_policy_for_mode(mode: str | None) -> dict[str, list[str]]:
             "strategy_optimization_comparison.csv",
             "regime_performance_report.csv",
             "benchmark_metrics.csv",
+            "early_exposure_report.csv",
             "bull_underperformance_window_analysis.csv",
         ],
         "audit_only": [
@@ -486,7 +484,7 @@ def build_model_review_markdown(review: dict[str, Any]) -> str:
         lines.extend([
             "1. `model_review.md` for the decision.",
             "2. `strategy_optimization_comparison.csv` for promotion criteria.",
-            "3. `regime_performance_report.csv` and `benchmark_metrics.csv` for attribution.",
+            "3. `regime_performance_report.csv`, `benchmark_metrics.csv`, and `early_exposure_report.csv` for attribution.",
             "4. Raw logs and diagnostics only when debugging a specific failure.",
             "",
         ])
@@ -508,7 +506,7 @@ def build_results_index_markdown(mode: str = COMPLETE_MODE) -> str:
             "- `strategy_manifest.json`: frozen strategy class, target table, config, and git commit.",
             "",
             "## Deferred To Complete Mode",
-            "- Action logs, equity curves, signal attribution, sell-too-early, blocked-buy, state-transition diagnostics.",
+            "- Early exposure, action logs, equity curves, signal attribution, sell-too-early, blocked-buy, state-transition diagnostics.",
             "- Timestamp/accounting audit, cost stress, warmup sensitivity, HTML report.",
             "",
         ])
@@ -526,6 +524,7 @@ def build_results_index_markdown(mode: str = COMPLETE_MODE) -> str:
         "- `strategy_optimization_summary.md`: short generated comparison summary.",
         "- `benchmark_metrics.csv`: Buy & Hold, exposure-matched, simple EMA168, and previous-best benchmarks.",
         "- `final_score_report.csv`: score inputs and hard-constraint checks.",
+        "- `early_exposure_report.csv`: first 30/60/120 day exposure and return capture.",
         "",
         "## Attribution",
         "- `regime_performance_report.csv`: BULL/MIXED/BEAR behavior.",
@@ -731,6 +730,8 @@ def _effective_config(
     snapshot["evaluation"]["mode"] = mode
     snapshot["evaluation"]["candidate_name"] = candidate_name
     snapshot["evaluation"]["diagnostics_enabled"] = diagnostics_enabled
+    snapshot.setdefault("cost", {})
+    snapshot["cost"].setdefault("min_notional", 0.0)
     snapshot["evaluation"].setdefault("slippage_bps", 0.0)
     snapshot["evaluation"].setdefault("benchmarks", ["buy_hold", "exposure_matched_buy_hold"])
     if "simple_ema168_filter" not in snapshot["evaluation"]["benchmarks"]:
@@ -766,7 +767,8 @@ def _strategy_manifest_for_run(candidate_name: str, config: dict[str, Any]) -> d
         capital = config.get("capital", {}).get("initial", 100.0)
         reserve = config.get("capital", {}).get("reserve", 0.0)
         fee = config.get("cost", {}).get("fee_rate", 0.0)
-        strategy = build_strategy(candidate_name, capital, reserve, fee)
+        min_notional = config.get("cost", {}).get("min_notional")
+        strategy = build_strategy(candidate_name, capital, reserve, fee, min_notional=min_notional)
         return build_strategy_manifest(strategy, config)
     except Exception as exc:  # pragma: no cover - reporting fallback
         return {"strategy_name": candidate_name, "error": str(exc)}
@@ -813,18 +815,11 @@ def _write_artifacts(
     run_dir: Path,
     actions_df: pd.DataFrame,
     equity_df: pd.DataFrame,
-    *,
-    write_nested: bool = True,
 ) -> None:
     if actions_df.empty:
         actions_df = pd.DataFrame(columns=_action_log_columns())
     if equity_df.empty:
         equity_df = pd.DataFrame()
-    if write_nested:
-        (run_dir / "action_logs").mkdir(exist_ok=True)
-        (run_dir / "equity_curves").mkdir(exist_ok=True)
-        actions_df.to_csv(run_dir / "action_logs" / "action_logs.csv.gz", index=False, compression="gzip")
-        equity_df.to_csv(run_dir / "equity_curves" / "equity_curves.csv.gz", index=False, compression="gzip")
     actions_df.to_csv(run_dir / "action_logs.csv.gz", index=False, compression="gzip")
     equity_df.to_csv(run_dir / "equity_curves.csv.gz", index=False, compression="gzip")
 
@@ -1082,6 +1077,66 @@ def build_drawdown_metrics(equity_df: pd.DataFrame, candidate_name: str) -> pd.D
             "top_5_drawdowns": ";".join(f"{x:.6f}" for x in dd.nsmallest(5).tolist()),
         })
     return pd.DataFrame(rows, columns=_drawdown_columns())
+
+
+def build_early_exposure_report(
+    equity_df: pd.DataFrame,
+    raw_df: pd.DataFrame,
+    candidate_name: str,
+) -> pd.DataFrame:
+    columns = [
+        "symbol", "window_id", "market_regime", "window_days",
+        "strategy_return", "buy_hold_return", "excess_return",
+        "first_buy_delay_days", "exposure_first30", "exposure_first60",
+        "exposure_first120", "exposure_mid_window", "exposure_last60",
+        "price_return_first30", "price_return_first60", "price_return_first120",
+        "strategy_return_first30", "strategy_return_first60", "strategy_return_first120",
+        "early_capture_first30", "early_capture_first60", "early_capture_first120",
+    ]
+    if equity_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    raw_lookup = {
+        (row["symbol"], row["window_label"]): row
+        for _, row in raw_df[raw_df["strategy_name"] == candidate_name].iterrows()
+    }
+    rows = []
+    for key, group in _window_groups(equity_df):
+        symbol = key["symbol"]
+        window_id = key["window_id"]
+        raw = raw_lookup.get((symbol, window_id))
+        if raw is None:
+            continue
+        g = group.sort_values("timestamp").reset_index(drop=True)
+        price_col = f"{symbol}_price"
+        value_col = f"{symbol}_value"
+        if price_col not in g.columns or value_col not in g.columns or "total_value" not in g.columns:
+            continue
+        exposure = (g[value_col] / g["total_value"].replace(0, np.nan)).fillna(0.0)
+        rows.append({
+            **key,
+            "market_regime": raw.get("market_regime"),
+            "window_days": len(g),
+            "strategy_return": raw.get("total_return"),
+            "buy_hold_return": raw.get("buy_hold_return"),
+            "excess_return": raw.get("excess_return"),
+            "first_buy_delay_days": _first_buy_delay(g, value_col),
+            "exposure_first30": _head_mean(exposure, 30),
+            "exposure_first60": _head_mean(exposure, 60),
+            "exposure_first120": _head_mean(exposure, 120),
+            "exposure_mid_window": exposure.iloc[len(exposure) // 3: 2 * len(exposure) // 3].mean() if len(exposure) else np.nan,
+            "exposure_last60": exposure.tail(60).mean() if len(exposure) else np.nan,
+            "price_return_first30": _horizon_return(g[price_col], 30),
+            "price_return_first60": _horizon_return(g[price_col], 60),
+            "price_return_first120": _horizon_return(g[price_col], 120),
+            "strategy_return_first30": _horizon_return(g["total_value"], 30),
+            "strategy_return_first60": _horizon_return(g["total_value"], 60),
+            "strategy_return_first120": _horizon_return(g["total_value"], 120),
+            "early_capture_first30": _capture_ratio_value(g["total_value"], g[price_col], 30),
+            "early_capture_first60": _capture_ratio_value(g["total_value"], g[price_col], 60),
+            "early_capture_first120": _capture_ratio_value(g["total_value"], g[price_col], 120),
+        })
+    return pd.DataFrame(rows, columns=columns)
 
 
 def build_timestamp_audit(actions_df: pd.DataFrame) -> pd.DataFrame:
@@ -1834,11 +1889,39 @@ def _window_groups(df: pd.DataFrame):
 
 
 def _return_series(group: pd.DataFrame) -> pd.Series:
-    return group["total_value"].pct_change().fillna(group["total_value"].iloc[0] / 100.0 - 1.0)
+    return group["total_value"].pct_change().fillna(0.0)
 
 
 def _total_return(group: pd.DataFrame) -> float:
-    return float(group["total_value"].iloc[-1] / 100.0 - 1.0)
+    initial = float(group["total_value"].iloc[0])
+    return float(group["total_value"].iloc[-1] / initial - 1.0) if initial > 0 else np.nan
+
+
+def _head_mean(series: pd.Series, days: int) -> float:
+    return float(series.head(days).mean()) if len(series) else np.nan
+
+
+def _horizon_return(series: pd.Series, days: int) -> float:
+    if len(series) < 2:
+        return np.nan
+    idx = min(days - 1, len(series) - 1)
+    start = float(series.iloc[0])
+    return float(series.iloc[idx] / start - 1.0) if start > 0 else np.nan
+
+
+def _capture_ratio_value(equity: pd.Series, price: pd.Series, days: int) -> float:
+    price_ret = _horizon_return(price, days)
+    strat_ret = _horizon_return(equity, days)
+    if pd.isna(price_ret) or abs(price_ret) < 1e-12:
+        return np.nan
+    return float(strat_ret / price_ret)
+
+
+def _first_buy_delay(group: pd.DataFrame, value_col: str) -> float:
+    if value_col not in group.columns:
+        return np.nan
+    active = group.index[group[value_col].astype(float) > 1e-9]
+    return float(active[0]) if len(active) else np.nan
 
 
 def _annual_return_from_group(total_return: float, group: pd.DataFrame) -> float:

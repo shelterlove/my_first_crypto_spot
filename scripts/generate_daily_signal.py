@@ -58,6 +58,7 @@ def main() -> None:
             config["capital"]["initial"],
             config["capital"]["reserve"],
             config["cost"]["fee_rate"],
+            min_notional=config.get("cost", {}).get("min_notional"),
         )
         setattr(strategy, "TARGET_ALLOC", {symbol: 1.0})
         candles = {symbol: df}

@@ -261,7 +261,7 @@ class V11Strategy(V1LessChurnStrategy):
 
         buy_pct = min(gap, max_buy)
         buy_qty = total_value * buy_pct / price
-        if buy_qty * price < 10.0:
+        if buy_qty * price < self.min_notional:
             return []
 
         self._last_buy_call = self._call_count
@@ -810,7 +810,7 @@ class V13Strategy(V12Strategy):
 
         buy_pct = min(gap, max_buy)
         buy_qty = total_value * buy_pct / price
-        if buy_qty * price < 10.0:
+        if buy_qty * price < self.min_notional:
             return []
 
         self._last_buy_call = self._call_count

@@ -61,6 +61,7 @@ class V1SpotStrategy(PortfolioStrategyBase):
         self.initial_capital = initial_capital
         self.reserve = reserve
         self.fee_rate = fee_rate
+        self.min_notional = 10.0
 
         self._confirm_bars = dict(self.CONFIRM_BARS)
         if confirm_bars_override:
@@ -270,7 +271,7 @@ class V1SpotStrategy(PortfolioStrategyBase):
 
         buy_pct = min(gap, max_buy)
         buy_qty = total_value * buy_pct / price
-        if buy_qty * price < 10.0:
+        if buy_qty * price < self.min_notional:
             return []
 
         self._last_buy_call = self._call_count

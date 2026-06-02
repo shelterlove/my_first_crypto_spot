@@ -105,11 +105,20 @@ STRATEGY_CLASSES = {
 }
 
 
-def build_strategy(name: str, capital: float, reserve: float, fee: float) -> PortfolioStrategyBase:
+def build_strategy(
+    name: str,
+    capital: float,
+    reserve: float,
+    fee: float,
+    min_notional: float | None = None,
+) -> PortfolioStrategyBase:
     cls = STRATEGY_CLASSES.get(name)
     if cls is None:
         raise ValueError(f"Unknown V1 strategy: {name}")
-    return cls(initial_capital=capital, reserve=reserve, fee_rate=fee)
+    strategy = cls(initial_capital=capital, reserve=reserve, fee_rate=fee)
+    if min_notional is not None and hasattr(strategy, "min_notional"):
+        strategy.min_notional = float(min_notional)
+    return strategy
 
 
 class V1BenchmarkRunner:
@@ -158,6 +167,7 @@ class V1BenchmarkRunner:
         capital = self.config["capital"]["initial"]
         reserve = self.config["capital"]["reserve"]
         fee = self.config["cost"]["fee_rate"]
+        min_notional = self.config.get("cost", {}).get("min_notional")
         warmup_bars = self.config.get("warmup_bars", 200)
         execution_mode = self.config.get("execution", {}).get("mode", "next_open")
 
@@ -168,7 +178,7 @@ class V1BenchmarkRunner:
             df = all_dfs[symbol]
             for wc in self.config["windows"]:
                 for name in strategy_names:
-                    strategy = build_strategy(name, capital, reserve, fee)
+                    strategy = build_strategy(name, capital, reserve, fee, min_notional=min_notional)
                     setattr(strategy, "TARGET_ALLOC", {symbol: 1.0})
                     wms = run_strategy_rolling(
                         symbol=symbol,
