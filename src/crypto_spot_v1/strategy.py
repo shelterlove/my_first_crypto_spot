@@ -271,6 +271,8 @@ class V1SpotStrategy(PortfolioStrategyBase):
 
         buy_pct = min(gap, max_buy)
         buy_qty = total_value * buy_pct / price
+        if buy_qty <= 1e-12:
+            return []
         if buy_qty * price < self.min_notional:
             return []
 

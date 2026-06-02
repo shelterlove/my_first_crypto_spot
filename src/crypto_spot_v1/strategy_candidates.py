@@ -261,6 +261,8 @@ class V11Strategy(V1LessChurnStrategy):
 
         buy_pct = min(gap, max_buy)
         buy_qty = total_value * buy_pct / price
+        if buy_qty <= 1e-12:
+            return []
         if buy_qty * price < self.min_notional:
             return []
 
@@ -810,6 +812,8 @@ class V13Strategy(V12Strategy):
 
         buy_pct = min(gap, max_buy)
         buy_qty = total_value * buy_pct / price
+        if buy_qty <= 1e-12:
+            return []
         if buy_qty * price < self.min_notional:
             return []
 
@@ -2236,3 +2240,31 @@ class V212CStrategy(V212AStrategy):
                 self._join_guard(guard, f"{self.VERSION_LABEL}_risk_reduce_pullback_softened"),
             )
         return threshold, adjusted_max_sell, guard
+
+
+class V219BStrategy(V212AStrategy):
+    """V2.19B: skip tiny buys as an explicit percentage rule."""
+
+    VERSION_LABEL = "v2_19B"
+    MIN_BUY_PCT = 0.08
+
+    @property
+    def name(self) -> str:
+        return "v2_19B"
+
+    def _adjust_buy_execution(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        buy_setup: str,
+        max_buy: float,
+        confirmed_state: str | None = None,
+    ) -> tuple[float, str]:
+        adjusted, guard = super()._adjust_buy_execution(
+            latest, price, raw_state, buy_setup, max_buy,
+            confirmed_state=confirmed_state,
+        )
+        if adjusted < self.MIN_BUY_PCT:
+            return 0.0, self._join_guard(guard, f"{self.VERSION_LABEL}_tiny_buy_skipped")
+        return adjusted, guard
