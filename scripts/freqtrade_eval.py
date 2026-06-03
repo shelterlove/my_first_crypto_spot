@@ -24,6 +24,23 @@ ROLLING_PRESETS = {
     "quick": [(365, 180)],
     "standard": [(365, 90), (730, 120), (1095, 180)],
 }
+EVAL_SPLITS = {
+    "dev": {
+        "timerange": "20200101-20231231",
+        "report_window": "20200101-20231231",
+        "purpose": "strategy design and trade diagnostics",
+    },
+    "validation": {
+        "timerange": "20240101-20250531",
+        "report_window": "20240101-20250531",
+        "purpose": "candidate selection without trade-level rule tuning",
+    },
+    "holdout": {
+        "timerange": "20250601-20260601",
+        "report_window": "20250601-20260601",
+        "purpose": "final review only; do not use for strategy design",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -36,6 +53,7 @@ class BacktestRun:
 
 def main() -> None:
     args = parse_args()
+    apply_eval_split(args)
     pairs = args.pairs
     allocation = args.allocation
     if len(allocation) != len(pairs):
@@ -170,6 +188,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeframe", default="1d")
     parser.add_argument("--timerange", default="20240601-20260601")
     parser.add_argument("--report-window", default="20260301-20260601")
+    parser.add_argument("--eval-split", choices=sorted(EVAL_SPLITS), default="")
     parser.add_argument("--pairs", nargs="+", default=DEFAULT_PAIRS)
     parser.add_argument("--allocation", nargs="+", type=float, default=DEFAULT_ALLOCATION)
     parser.add_argument("--cache", default="none")
@@ -183,6 +202,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rolling-window-days", type=int, default=365)
     parser.add_argument("--rolling-step-days", type=int, default=90)
     return parser.parse_args()
+
+
+def apply_eval_split(args: argparse.Namespace) -> None:
+    if not args.eval_split:
+        return
+    split = EVAL_SPLITS[args.eval_split]
+    args.timerange = split["timerange"]
+    args.report_window = split["report_window"]
+
+
+def eval_purpose(args: argparse.Namespace) -> str:
+    if not args.eval_split:
+        return "custom evaluation"
+    return EVAL_SPLITS[args.eval_split]["purpose"]
 
 
 def run_backtest(
@@ -325,6 +358,8 @@ def summarize_run(
     bh_window = buyhold_return(pairs, allocation, window["date"].iloc[0], window["date"].iloc[-1], args)
     trades = result.trades
     return {
+        "eval_split": args.eval_split or "custom",
+        "eval_purpose": eval_purpose(args),
         "mode": "single",
         "pair": run.pair,
         "timerange": timerange,
@@ -381,6 +416,8 @@ def summarize_fixed_single_portfolio(
     bh_full = buyhold_return(pairs, allocation, full_start, full_end, args)
     bh_window = buyhold_return(pairs, allocation, window["date"].iloc[0], window["date"].iloc[-1], args)
     return {
+        "eval_split": args.eval_split or "custom",
+        "eval_purpose": eval_purpose(args),
         "mode": "single_fixed_aggregate",
         "pair": "PORTFOLIO",
         "timerange": timerange,
@@ -485,6 +522,8 @@ def rolling_detail_row(
     result_dir: Path,
 ) -> dict:
     return {
+        "eval_split": row.get("eval_split", "custom"),
+        "eval_purpose": row.get("eval_purpose", ""),
         "spec_index": spec_index,
         "window_index": window_index,
         "window_days": window_days,
@@ -527,6 +566,8 @@ def rolling_aggregate_row(
         result_dir=result_dir,
     )
     return {
+        "eval_split": detail["eval_split"],
+        "eval_purpose": detail["eval_purpose"],
         "spec_index": detail["spec_index"],
         "window_index": detail["window_index"],
         "window_days": detail["window_days"],
@@ -731,6 +772,8 @@ def render_markdown_report(args: argparse.Namespace, rows: list[dict]) -> str:
         "# Freqtrade Evaluation Report",
         "",
         f"- Strategy: `{args.strategy}`",
+        f"- Evaluation split: `{args.eval_split or 'custom'}`",
+        f"- Evaluation purpose: `{eval_purpose(args)}`",
         f"- Timerange: `{args.timerange}`",
         f"- Report window: `{args.report_window}`",
         f"- Pairs: `{', '.join(args.pairs)}`",
@@ -780,6 +823,8 @@ def render_rolling_report(args: argparse.Namespace, rows: list[dict]) -> str:
         "# Freqtrade Rolling Evaluation",
         "",
         f"- Strategy: `{args.strategy}`",
+        f"- Evaluation split: `{args.eval_split or 'custom'}`",
+        f"- Evaluation purpose: `{eval_purpose(args)}`",
         f"- Timerange: `{args.timerange}`",
         f"- Rolling preset: `{args.rolling_preset or 'custom'}`",
         f"- Rolling specs: `{', '.join(f'{days}d/{step}d' for days, step in rolling_specs(args))}`",
