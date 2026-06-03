@@ -2650,3 +2650,118 @@ class V222AStrategy(V221EStrategy):
         if not (price > ema72 and ema72 > ema168 and ema168_slope > 0):
             return False
         return bool(pd.isna(roc_20) or roc_20 >= 0)
+
+
+class V223AStrategy(V221EStrategy):
+    """V2.23A: modest buy-target floor for constructive MIXED regimes."""
+
+    VERSION_LABEL = "v2_23A"
+    CONSTRUCTIVE_MIXED_BUY_FLOOR = {
+        "BTC/USDT": 0.74,
+        "ETH/USDT": 0.70,
+        "BNB/USDT": 0.68,
+    }
+
+    @property
+    def name(self) -> str:
+        return "v2_23A"
+
+    def _compose_target(
+        self,
+        symbol: str,
+        tactical_target: float,
+        raw_state: str,
+        trend_risk: int,
+        drawdown_risk: int,
+        latest: pd.Series,
+        price: float,
+        side: str,
+    ) -> float:
+        target = super()._compose_target(
+            symbol=symbol,
+            tactical_target=tactical_target,
+            raw_state=raw_state,
+            trend_risk=trend_risk,
+            drawdown_risk=drawdown_risk,
+            latest=latest,
+            price=price,
+            side=side,
+        )
+        if side == "buy" and self._is_constructive_mixed_buy_target(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            trend_risk=trend_risk,
+        ):
+            target = max(target, self.CONSTRUCTIVE_MIXED_BUY_FLOOR.get(symbol, 0.68))
+        return target
+
+    @staticmethod
+    def _is_constructive_mixed_buy_target(
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        trend_risk: int,
+    ) -> bool:
+        if raw_state != "MIXED" or price <= 0 or trend_risk > 1:
+            return False
+        if str(latest.get("btc_regime", "")) == "BEAR":
+            return False
+
+        ema72 = latest.get("ema72")
+        ema168 = latest.get("ema168")
+        ema168_slope = latest.get("ema168_slope")
+        roc_20 = latest.get("roc_20")
+        if pd.isna(ema72) or pd.isna(ema168) or pd.isna(ema168_slope):
+            return False
+        if not (price > ema168 and ema72 > ema168 and ema168_slope > 0):
+            return False
+        return bool(pd.isna(roc_20) or roc_20 >= -0.03)
+
+
+class V223BStrategy(V223AStrategy):
+    """V2.23B: conservative constructive MIXED floor with distribution filters."""
+
+    VERSION_LABEL = "v2_23B"
+    CONSTRUCTIVE_MIXED_BUY_FLOOR = {
+        "BTC/USDT": 0.72,
+        "ETH/USDT": 0.68,
+        "BNB/USDT": 0.66,
+    }
+
+    @property
+    def name(self) -> str:
+        return "v2_23B"
+
+    @staticmethod
+    def _is_constructive_mixed_buy_target(
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        trend_risk: int,
+    ) -> bool:
+        if not V223AStrategy._is_constructive_mixed_buy_target(latest, price, raw_state, trend_risk):
+            return False
+
+        ema24 = latest.get("ema24")
+        roc_5 = latest.get("roc_5")
+        roc_10 = latest.get("roc_10")
+        volume_strength = latest.get("volume_strength")
+        donchian_pos = latest.get("donchian_pos")
+        atr_rank = latest.get("atr_pct_rank")
+
+        short_weak = (
+            (not pd.isna(ema24) and price < ema24)
+            or (not pd.isna(roc_5) and roc_5 < -0.03)
+            or (not pd.isna(roc_10) and roc_10 < -0.08)
+        )
+        if short_weak and not pd.isna(volume_strength) and volume_strength >= 1.15:
+            return False
+        if (
+            not pd.isna(donchian_pos)
+            and donchian_pos >= 0.90
+            and not pd.isna(atr_rank)
+            and atr_rank >= 0.85
+        ):
+            return False
+        return True
