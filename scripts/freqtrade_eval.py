@@ -26,13 +26,13 @@ ROLLING_PRESETS = {
 }
 EVAL_SPLITS = {
     "dev": {
-        "timerange": "20200101-20231231",
-        "report_window": "20200101-20231231",
-        "purpose": "strategy design and trade diagnostics",
+        "timerange": "20200101-20241231",
+        "report_window": "20200101-20241231",
+        "purpose": "strategy design and trade diagnostics using all non-validation history",
     },
     "validation": {
-        "timerange": "20240101-20250531",
-        "report_window": "20240101-20250531",
+        "timerange": "20250101-20250531",
+        "report_window": "20250101-20250531",
         "purpose": "candidate selection without trade-level rule tuning",
     },
     "holdout": {

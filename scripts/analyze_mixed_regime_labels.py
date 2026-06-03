@@ -67,7 +67,7 @@ def main() -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--timerange", default="20200101-20231231")
+    parser.add_argument("--timerange", default="20200101-20241231")
     parser.add_argument("--run-dir", default=str(DEFAULT_RUN_DIR))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--run-id", default="mixed_regime_v2_21E_dev_20260603")
