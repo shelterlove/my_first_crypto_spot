@@ -142,7 +142,11 @@ def build_native_signal_frame(
         row_index = out.index[idx]
         out.loc[row_index, "native_action"] = record["action"]
         out.loc[row_index, "native_reason"] = record["reason"]
-        out.loc[row_index, "native_delta_pct"] = _action_delta_pct(record["side"], record["notional"], capital)
+        out.loc[row_index, "native_delta_pct"] = _action_delta_pct(
+            record["side"],
+            record["notional"],
+            _portfolio_value(portfolio, pair, price),
+        )
         out.loc[row_index, "native_current_pct"] = current_pct
         if record["target_pct"] is not None:
             out.loc[row_index, "native_target_pct"] = record["target_pct"]
@@ -198,6 +202,11 @@ def _current_position_pct(portfolio: PortfolioState, pair: str, price: float) ->
     position_value = pos.quantity * price
     total_value = max(portfolio.cash + position_value, 1e-9)
     return max(0.0, min(1.0, position_value / total_value))
+
+
+def _portfolio_value(portfolio: PortfolioState, pair: str, price: float) -> float:
+    pos = portfolio.positions.get(pair, PositionState())
+    return max(portfolio.cash + pos.quantity * price, 1e-9)
 
 
 def _execute_synthetic_action(action: Action, portfolio: PortfolioState, fee_rate: float) -> None:
