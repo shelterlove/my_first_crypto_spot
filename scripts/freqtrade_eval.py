@@ -185,6 +185,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--strategy", default="CryptoSpotV219B")
     parser.add_argument("--config", default="freqtrade_user_data/config/config.dryrun.example.json")
     parser.add_argument("--userdir", default="freqtrade_user_data")
+    parser.add_argument("--exchange", default="", help="Optional Freqtrade exchange override.")
+    parser.add_argument("--datadir", default="", help="Optional Freqtrade data directory override.")
     parser.add_argument("--timeframe", default="1d")
     parser.add_argument("--timerange", default="20240601-20260601")
     parser.add_argument("--report-window", default="20260301-20260601")
@@ -238,6 +240,10 @@ def run_backtest(
         except FileNotFoundError:
             pass
 
+    config_path = args.config
+    if args.exchange:
+        config_path = str(write_exchange_override_config(args.config, args.exchange, run_dir))
+
     cmd = [
         sys.executable,
         "-m",
@@ -246,7 +252,7 @@ def run_backtest(
         "--userdir",
         args.userdir,
         "--config",
-        args.config,
+        config_path,
         "--strategy",
         args.strategy,
         "--timerange",
@@ -259,9 +265,13 @@ def run_backtest(
         f"{wallet:g}",
         "--backtest-directory",
         str(run_dir),
+    ]
+    if args.datadir:
+        cmd.extend(["--datadir", args.datadir])
+    cmd.extend([
         "--pairs",
         *pairs,
-    ]
+    ])
     print("Running:", " ".join(cmd))
     (run_dir / "command.txt").write_text(" ".join(cmd), encoding="utf-8")
     if args.verbose:
@@ -280,6 +290,14 @@ def run_backtest(
             print_log_tail(log_path)
             raise subprocess.CalledProcessError(completed.returncode, cmd)
     return BacktestRun(pair=pair, wallet=wallet, directory=run_dir, result_zip=latest_result_zip(run_dir))
+
+
+def write_exchange_override_config(config_path: str, exchange_name: str, run_dir: Path) -> Path:
+    base_config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    base_config.setdefault("exchange", {})["name"] = exchange_name
+    out = run_dir / "config.exchange_override.json"
+    out.write_text(json.dumps(base_config, indent=2), encoding="utf-8")
+    return out
 
 
 def latest_result_zip(directory: Path) -> Path:
@@ -459,7 +477,9 @@ def buyhold_return(pairs: list[str], allocation: list[float], start: pd.Timestam
 
 
 def load_pair_prices(pair: str, args: argparse.Namespace) -> pd.DataFrame:
-    data_dir = PROJECT_ROOT / args.userdir / "data" / "binance"
+    data_dir = Path(args.datadir) if args.datadir else PROJECT_ROOT / args.userdir / "data" / "binance"
+    if not data_dir.is_absolute():
+        data_dir = PROJECT_ROOT / data_dir
     path = data_dir / f"{pair.replace('/', '_')}-{args.timeframe}.feather"
     if not path.exists():
         raise FileNotFoundError(f"Missing OHLCV data: {path}")
