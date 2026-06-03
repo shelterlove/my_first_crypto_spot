@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from .benchmark import build_strategy
 from .decision import build_decision_record
+from . import strategy_utils
 from .strategy_rebalance import Action
 from .strategy_rebalance import PortfolioState, PositionState
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = PROJECT_ROOT / "freqtrade_user_data" / "data" / "binance"
+BTC_PAIR = "BTC/USDT"
 
 
 @dataclass(frozen=True)
@@ -107,6 +115,7 @@ def build_native_signal_frame(
 
     if out.empty:
         return out
+    out = _with_btc_regime(out, pair)
 
     strategy = build_strategy(strategy_name, capital, reserve, fee_rate, min_notional=min_notional)
     setattr(strategy, "TARGET_ALLOC", {pair: 1.0})
@@ -152,6 +161,36 @@ def _portfolio_for_pair(pair: str, price: float, capital: float, pct: float) -> 
         cash=capital - position_value,
         positions={pair: PositionState(quantity=quantity, avg_cost=price if quantity > 0 else 0.0)},
     )
+
+
+def _with_btc_regime(dataframe: pd.DataFrame, pair: str) -> pd.DataFrame:
+    out = dataframe.copy()
+    if "timestamp" not in out.columns:
+        out["timestamp"] = out["date"] if "date" in out.columns else out.index
+    timestamps = pd.to_datetime(out["timestamp"], utc=True)
+
+    if pair == BTC_PAIR:
+        source = out.copy()
+        source.index = timestamps
+        regime = strategy_utils.compute_btc_regime(source)
+    else:
+        regime = _cached_btc_regime()
+
+    out["btc_regime"] = regime.reindex(timestamps).ffill().fillna("RANGE").to_numpy()
+    out["btc_regime_timestamp"] = timestamps.to_numpy()
+    return out
+
+
+@lru_cache(maxsize=1)
+def _cached_btc_regime() -> pd.Series:
+    path = DATA_DIR / "BTC_USDT-1d.feather"
+    if not path.exists():
+        raise FileNotFoundError(f"BTC regime source not found: {path}")
+    frame = pd.read_feather(path)
+    frame["date"] = pd.to_datetime(frame["date"], utc=True)
+    frame = frame.sort_values("date").set_index("date")
+    frame = strategy_utils.compute_indicators(frame)
+    return strategy_utils.compute_btc_regime(frame)
 
 
 def _current_position_pct(portfolio: PortfolioState, pair: str, price: float) -> float:

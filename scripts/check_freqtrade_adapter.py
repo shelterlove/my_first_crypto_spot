@@ -13,7 +13,7 @@ if str(PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from crypto_spot_v1 import strategy_utils
-from crypto_spot_v1.freqtrade_adapter import build_target_position_decision
+from crypto_spot_v1.freqtrade_adapter import build_native_signal_frame, build_target_position_decision
 
 
 def synthetic_daily(n: int = 260) -> pd.DataFrame:
@@ -41,6 +41,14 @@ def main() -> None:
     assert -1.0 <= decision.delta_pct <= 1.0
     if decision.target_pct is not None:
         assert 0.0 <= decision.target_pct <= 1.0
+    signal_frame = build_native_signal_frame(
+        pair="BTC/USDT",
+        dataframe=df,
+        strategy_name="v2_21E",
+        startup_candle_count=220,
+    )
+    assert "btc_regime" in signal_frame.columns
+    assert signal_frame["btc_regime"].notna().any()
     print(decision)
 
 
