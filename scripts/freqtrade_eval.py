@@ -26,9 +26,9 @@ ROLLING_PRESETS = {
 }
 EVAL_SPLITS = {
     "dev": {
-        "timerange": "20200101-20241231",
-        "report_window": "20200101-20241231",
-        "purpose": "strategy design and trade diagnostics using all non-validation history",
+        "timerange": "20180630-20241231",
+        "report_window": "20180630-20241231",
+        "purpose": "strategy design and trade diagnostics using all available clean-start non-validation history",
     },
     "validation": {
         "timerange": "20250101-20250531",

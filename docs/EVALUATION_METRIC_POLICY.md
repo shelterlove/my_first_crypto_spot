@@ -14,14 +14,16 @@ Strategy iteration must use fixed time splits to reduce researcher overfitting.
 
 | Split | Timerange | Purpose |
 | --- | --- | --- |
-| `dev` | `20200101-20241231` | Strategy design and trade-level diagnostics using all non-validation history available locally |
+| `dev` | `20180630-20241231` | Strategy design and trade-level diagnostics using all available clean-start non-validation history |
 | `validation` | `20250101-20250531` | Candidate selection without trade-level rule tuning |
 | `holdout` | `20250601-20260601` | Final review only; do not use for strategy design |
 
 Use `scripts/freqtrade_eval.py --eval-split <split>` to apply these ranges.
-The local BTC/ETH/BNB daily data currently starts on `2020-01-01`. If older
-history is added later, extend `dev` backward while keeping `validation` and
-`holdout` untouched.
+The local BTC/ETH/BNB daily data has a common usable start after BNB begins on
+`2017-11-06`. The dev split starts on `2018-06-30`, after all three pairs have
+enough daily startup candles for the Freqtrade adapter. If older common history
+is added later, extend `dev` backward while keeping `validation` and `holdout`
+untouched.
 Do not inspect holdout trades to design new rules. Holdout is only for a
 candidate that already passed development and validation checks.
 
