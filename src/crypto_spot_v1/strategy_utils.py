@@ -68,12 +68,13 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["dd_from_180d_high"] = 1 - df["close"] / df["high_180"]
 
     # ── Volume (if quote_volume available) ──
-    if "quote_volume" in df.columns:
+    volume_col = "quote_volume" if "quote_volume" in df.columns else "volume" if "volume" in df.columns else None
+    if volume_col is not None:
         df["volume_ma20"] = (
-            df["quote_volume"].rolling(20).mean()
+            df[volume_col].rolling(20).mean()
         )
         df["volume_ma60"] = (
-            df["quote_volume"].rolling(60).mean()
+            df[volume_col].rolling(60).mean()
         )
         ratio = df["volume_ma20"] / df["volume_ma60"].replace(0, float("nan"))
         df["volume_strength"] = ratio.fillna(1.0)

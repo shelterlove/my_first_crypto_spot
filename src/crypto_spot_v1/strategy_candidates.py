@@ -2574,3 +2574,79 @@ class V221EStrategy(V220DStrategy):
         ):
             return False
         return bool(price > ema24 and price > ema168 and roc_5 > 0 and ema72 > ema168 and ema168_slope > 0)
+
+
+class V222AStrategy(V221EStrategy):
+    """V2.22A: skip target-reduce while MIXED remains above EMA72."""
+
+    VERSION_LABEL = "v2_22A"
+
+    @property
+    def name(self) -> str:
+        return "v2_22A"
+
+    def _adjust_sell_execution(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        drawdown_risk: int,
+        risk_score: int,
+        sell_setup: str,
+        sell_threshold: float,
+        max_sell: float,
+    ) -> tuple[float, float, str]:
+        threshold, adjusted_max_sell, guard = super()._adjust_sell_execution(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            drawdown_risk=drawdown_risk,
+            risk_score=risk_score,
+            sell_setup=sell_setup,
+            sell_threshold=sell_threshold,
+            max_sell=max_sell,
+        )
+        if self._is_above_ema72_mixed_noise(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            confirmed_state=confirmed_state,
+            trend_risk=trend_risk,
+            sell_setup=sell_setup,
+        ):
+            return (
+                threshold,
+                0.0,
+                self._join_guard(guard, f"{self.VERSION_LABEL}_above_ema72_mixed_noise"),
+            )
+        return threshold, adjusted_max_sell, guard
+
+    @staticmethod
+    def _is_above_ema72_mixed_noise(
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        confirmed_state: str,
+        trend_risk: int,
+        sell_setup: str,
+    ) -> bool:
+        if sell_setup != "target-reduce":
+            return False
+        if raw_state != "MIXED" or confirmed_state != "MIXED":
+            return False
+        if price <= 0 or trend_risk > 1:
+            return False
+
+        ema72 = latest.get("ema72")
+        ema168 = latest.get("ema168")
+        ema168_slope = latest.get("ema168_slope")
+        roc_20 = latest.get("roc_20")
+        if pd.isna(ema72) or pd.isna(ema168) or pd.isna(ema168_slope):
+            return False
+        if not (price > ema72 and ema72 > ema168 and ema168_slope > 0):
+            return False
+        return bool(pd.isna(roc_20) or roc_20 >= 0)

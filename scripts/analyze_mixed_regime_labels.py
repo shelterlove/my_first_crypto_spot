@@ -20,7 +20,7 @@ from crypto_spot_v1 import strategy_utils  # noqa: E402
 
 
 DATA_DIR = PROJECT_ROOT / "freqtrade_user_data" / "data" / "binance"
-DEFAULT_RUN_DIR = PROJECT_ROOT / "results" / "freqtrade_eval" / "rolling_v2_21E_quick_20260602"
+DEFAULT_RUN_DIR = PROJECT_ROOT / "results" / "freqtrade_eval" / "rolling_v2_21E_dev_deltafix_quick_20260603"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "results" / "diagnostics"
 PAIRS = ("BTC/USDT", "ETH/USDT", "BNB/USDT")
 TAG_RE = re.compile(
@@ -112,24 +112,44 @@ def label_mixed_row(row: pd.Series) -> str:
     ema168_slope = row.get("ema168_slope")
     rolling_pos = row.get("rolling_365d_pos")
     dd_120 = row.get("dd_from_120d_high")
+    dd_180 = row.get("dd_from_180d_high")
+    donchian_pos = row.get("donchian_pos")
     roc20 = row.get("roc_20")
+    roc10 = row.get("roc_10")
     ema24_slope = row.get("ema24_slope")
+    volume_strength = row.get("volume_strength")
 
     if any(pd.isna(v) for v in (ema24, ema72, ema168, ema168_slope)):
         return "NEUTRAL_MIXED"
 
     long_intact = price > ema168 and ema72 > ema168 and ema168_slope > 0
-    high_zone = not pd.isna(rolling_pos) and rolling_pos >= 0.70
-    meaningful_pullback = not pd.isna(dd_120) and dd_120 >= 0.08
+    high_zone = (
+        (not pd.isna(rolling_pos) and rolling_pos >= 0.75)
+        or (not pd.isna(donchian_pos) and donchian_pos >= 0.80)
+    )
+    meaningful_pullback = (
+        (not pd.isna(dd_120) and dd_120 >= 0.08)
+        or (not pd.isna(dd_180) and dd_180 >= 0.12)
+    )
     short_weak = (price < ema24) or (not pd.isna(ema24_slope) and ema24_slope < 0)
 
     negative_momentum = not pd.isna(roc20) and roc20 < 0
     positive_momentum = not pd.isna(roc20) and roc20 > 0
+    sharp_short_drop = not pd.isna(roc10) and roc10 <= -0.08
+    high_volume = not pd.isna(volume_strength) and volume_strength >= 1.15
 
-    if high_zone and meaningful_pullback and short_weak and negative_momentum:
-        return "TOPPING_MIXED"
+    if price < ema168 or (ema72 < ema168 and ema168_slope < 0):
+        return "BREAKDOWN_MIXED"
+    if high_zone and meaningful_pullback and short_weak and (negative_momentum or sharp_short_drop or high_volume):
+        return "DISTRIBUTION_MIXED"
     if str(row.get("btc_regime", "")) == "BEAR":
         return "DEFENSIVE_MIXED"
+    if long_intact and price > ema72 and not negative_momentum:
+        return "ABOVE_EMA72_MIXED"
+    if long_intact and ema168 < price <= ema72 and not sharp_short_drop:
+        return "EMA72_PULLBACK_MIXED"
+    if long_intact and price > ema168 and (negative_momentum or sharp_short_drop):
+        return "EMA168_TEST_MIXED"
     if long_intact and not high_zone and price > ema24 and positive_momentum:
         return "RECOVERY_MIXED"
     return "NEUTRAL_MIXED"
@@ -151,9 +171,18 @@ def build_mixed_rows(
                 "close": row["close"],
                 "btc_regime": row["btc_regime"],
                 "rolling_365d_pos": row["rolling_365d_pos"],
+                "donchian_pos": row["donchian_pos"],
                 "dd_from_120d_high": row["dd_from_120d_high"],
+                "dd_from_180d_high": row["dd_from_180d_high"],
                 "ema168_slope": row["ema168_slope"],
+                "price_to_ema24": row["close"] / row["ema24"] if row["ema24"] else None,
+                "price_to_ema72": row["close"] / row["ema72"] if row["ema72"] else None,
+                "price_to_ema168": row["close"] / row["ema168"] if row["ema168"] else None,
+                "roc_5": row["roc_5"],
+                "roc_10": row["roc_10"],
                 "roc_20": row["roc_20"],
+                "atr_pct_rank": row["atr_pct_rank"],
+                "volume_strength": row.get("volume_strength", 1.0),
             }
             loc = frame.index.get_loc(idx)
             for horizon in (20, 60, 90):
@@ -223,7 +252,17 @@ def enrich_target_reduce(pair: str, ts: pd.Timestamp, tag: str, result_zip: Path
         "close": row["close"],
         "btc_regime": row["btc_regime"],
         "rolling_365d_pos": row["rolling_365d_pos"],
+        "donchian_pos": row["donchian_pos"],
         "dd_from_120d_high": row["dd_from_120d_high"],
+        "dd_from_180d_high": row["dd_from_180d_high"],
+        "price_to_ema24": row["close"] / row["ema24"] if row["ema24"] else None,
+        "price_to_ema72": row["close"] / row["ema72"] if row["ema72"] else None,
+        "price_to_ema168": row["close"] / row["ema168"] if row["ema168"] else None,
+        "roc_5": row["roc_5"],
+        "roc_10": row["roc_10"],
+        "roc_20": row["roc_20"],
+        "atr_pct_rank": row["atr_pct_rank"],
+        "volume_strength": row.get("volume_strength", 1.0),
     }
     out.update(parse_tag(tag))
     for horizon in (10, 20, 60, 90):
