@@ -113,7 +113,7 @@ class CryptoSpotV26(IStrategy):
         dataframe = self._latest_dataframe(pair)
         if dataframe is None:
             return proposed_stake
-        action, delta_pct = self._latest_native_action(dataframe)
+        action, delta_pct, _ = self._latest_native_signal(dataframe)
         if action != "buy":
             return 0.0
         stake = self._total_stake_amount(max_stake) * max(0.0, delta_pct)
@@ -140,15 +140,16 @@ class CryptoSpotV26(IStrategy):
         if dataframe is None or self._already_adjusted_this_candle(trade, current_time):
             return None
 
-        action, delta_pct = self._latest_native_action(dataframe)
+        action, delta_pct, reason = self._latest_native_signal(dataframe)
         if abs(delta_pct) < self.min_delta_pct:
             return None
         if action == "buy":
-            return min(max_stake, self._total_stake_amount(max_stake) * delta_pct)
+            stake = min(max_stake, self._total_stake_amount(max_stake) * delta_pct)
+            return stake, reason
         if action == "sell":
             position_value = float(getattr(trade, "amount", 0.0) or 0.0) * current_rate
             sell_value = self._total_stake_amount(max_stake) * abs(delta_pct)
-            return -min(position_value, sell_value)
+            return -min(position_value, sell_value), reason
         return None
 
     def _latest_dataframe(self, pair: str) -> pd.DataFrame | None:
@@ -160,10 +161,16 @@ class CryptoSpotV26(IStrategy):
 
     @staticmethod
     def _latest_native_action(dataframe: pd.DataFrame) -> tuple[str, float]:
+        action, delta_pct, _ = CryptoSpotV26._latest_native_signal(dataframe)
+        return action, delta_pct
+
+    @staticmethod
+    def _latest_native_signal(dataframe: pd.DataFrame) -> tuple[str, float, str]:
         latest = dataframe.iloc[-1]
         action = str(latest.get("native_action", "hold"))
         delta_pct = float(latest.get("native_delta_pct", 0.0) or 0.0)
-        return action, delta_pct
+        reason = str(latest.get("native_reason", "") or "")[:255]
+        return action, delta_pct, reason
 
     def _total_stake_amount(self, fallback: float) -> float:
         wallets = getattr(self, "wallets", None)

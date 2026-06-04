@@ -33,6 +33,23 @@ def test_partial_native_sell_does_not_emit_full_exit_signal() -> None:
     assert result.loc[1, "exit_tag"] == "full"
 
 
+def test_latest_native_signal_preserves_adjustment_reason() -> None:
+    frame = pd.DataFrame(
+        {
+            "native_action": ["sell"],
+            "native_delta_pct": [-0.10],
+            "native_reason": ["v2_21E_sell_target-reduce_r0"],
+        }
+    )
+
+    assert CryptoSpotV26._latest_native_signal(frame) == (
+        "sell",
+        -0.10,
+        "v2_21E_sell_target-reduce_r0",
+    )
+
+
 if __name__ == "__main__":
     test_partial_native_sell_does_not_emit_full_exit_signal()
+    test_latest_native_signal_preserves_adjustment_reason()
     print("Freqtrade shell tests passed")
