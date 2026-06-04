@@ -2576,6 +2576,88 @@ class V221EStrategy(V220DStrategy):
         return bool(price > ema24 and price > ema168 and roc_5 > 0 and ema72 > ema168 and ema168_slope > 0)
 
 
+class V225CStrategy(V221EStrategy):
+    """V2.25C: revive tiny BEAR buys only in high-risk recovery lag."""
+
+    VERSION_LABEL = "v2_25C"
+    LAGGING_RECOVERY_BUY_FLOOR = 0.08
+    LAGGING_RECOVERY_MAX_ATR_RANK = 0.85
+    LAGGING_RECOVERY_MIN_TREND_RISK = 2
+
+    @property
+    def name(self) -> str:
+        return "v2_25C"
+
+    def _adjust_buy_execution(
+        self,
+        latest: pd.Series,
+        price: float,
+        raw_state: str,
+        buy_setup: str,
+        max_buy: float,
+        confirmed_state: str | None = None,
+    ) -> tuple[float, str]:
+        adjusted, guard = super()._adjust_buy_execution(
+            latest=latest,
+            price=price,
+            raw_state=raw_state,
+            buy_setup=buy_setup,
+            max_buy=max_buy,
+            confirmed_state=confirmed_state,
+        )
+        if adjusted > 0 or "tiny_buy_skipped" not in guard:
+            return adjusted, guard
+        if buy_setup not in {"target-gap", "safe-recovery"}:
+            return adjusted, guard
+        trend_risk = self._calculate_trend_risk(latest, price)
+        if not self._allow_lagging_bear_recovery_floor(guard=guard, trend_risk=trend_risk):
+            return adjusted, guard
+        if not self._is_lagging_bear_recovery_execution(
+            latest=latest,
+            price=price,
+            confirmed_state=confirmed_state or "",
+            trend_risk=trend_risk,
+        ):
+            return adjusted, guard
+        return (
+            self.LAGGING_RECOVERY_BUY_FLOOR,
+            self._join_guard(guard, f"{self.VERSION_LABEL}_lagging_bear_recovery_buy_floor_{self.LAGGING_RECOVERY_BUY_FLOOR:.2f}"),
+        )
+
+    def _is_lagging_bear_recovery_execution(
+        self,
+        *,
+        latest: pd.Series,
+        price: float,
+        confirmed_state: str,
+        trend_risk: int,
+    ) -> bool:
+        if confirmed_state != "BEAR" or price <= 0 or trend_risk > 3:
+            return False
+        if str(latest.get("btc_regime", "")) == "BEAR":
+            return False
+
+        atr_rank = latest.get("atr_pct_rank")
+        if not pd.isna(atr_rank) and atr_rank >= self.LAGGING_RECOVERY_MAX_ATR_RANK:
+            return False
+
+        ema24 = latest.get("ema24")
+        ema24_slope = latest.get("ema24_slope")
+        return bool(
+            not pd.isna(ema24)
+            and not pd.isna(ema24_slope)
+            and price > ema24
+            and ema24_slope > 0
+        )
+
+    def _allow_lagging_bear_recovery_floor(self, *, guard: str, trend_risk: int) -> bool:
+        if trend_risk < self.LAGGING_RECOVERY_MIN_TREND_RISK:
+            return False
+        if "post-override-tgap" in guard:
+            return False
+        return True
+
+
 class V222AStrategy(V221EStrategy):
     """V2.22A: skip target-reduce while MIXED remains above EMA72."""
 
