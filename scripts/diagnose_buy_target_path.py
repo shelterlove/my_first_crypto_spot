@@ -40,12 +40,19 @@ def main() -> None:
 
     detail = pd.DataFrame(rows)
     detail.to_csv(output_dir / "buy_target_path_detail.csv", index=False)
+    blockers = detail[detail["lagging_recovery_lift_trigger"]].copy()
+    blockers.to_csv(output_dir / "lagging_recovery_execution_blockers.csv", index=False)
     summary = summarize(detail)
     summary.to_csv(output_dir / "buy_target_path_summary.csv", index=False)
+    blocker_summary = summarize_blockers(blockers)
+    blocker_summary.to_csv(output_dir / "lagging_recovery_blocker_summary.csv", index=False)
     report = render_report(args, summary)
     (output_dir / "buy_target_path_report.md").write_text(report, encoding="utf-8")
 
     print(summary.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+    if not blocker_summary.empty:
+        print("\nLagging recovery execution blockers")
+        print(blocker_summary.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
     print(f"\nWrote {output_dir}")
 
 
@@ -220,16 +227,16 @@ def compute_target_context(strategy, pair: str, history: pd.DataFrame, portfolio
     )
 
     cfg = strategy._state_config[confirmed_state]
-    if trend_continuation:
-        base_max_buy = min(cfg.get("max_buy", 0.25) * strategy.TREND_CONTINUATION_MAX_BUY_MULT, max(buy_target - current_pct, 0.0))
-    elif safe_recovery:
-        base_max_buy = min(cfg.get("max_buy", 0.25) * 2.0, max(buy_target - current_pct, 0.0))
-    elif recovery_override and hasattr(strategy, "RECOVERY_BUY_SIZE_MULT"):
-        base_max_buy = min(cfg.get("max_buy", 0.25) * strategy.RECOVERY_BUY_SIZE_MULT, max(buy_target - current_pct, 0.0))
-    elif pullback_buy:
-        base_max_buy = min(cfg.get("max_buy", 0.25) * 1.5, max(buy_target - current_pct, 0.0))
-    else:
-        base_max_buy = cfg.get("max_buy", 0.25)
+    base_max_buy = compute_base_max_buy(
+        strategy=strategy,
+        cfg=cfg,
+        buy_target=buy_target,
+        current_pct=current_pct,
+        trend_continuation=trend_continuation,
+        safe_recovery=safe_recovery,
+        recovery_override=recovery_override,
+        pullback_buy=pullback_buy,
+    )
     adjusted_max_buy, buy_guard = strategy._adjust_buy_execution(
         latest=latest,
         price=price,
@@ -243,6 +250,55 @@ def compute_target_context(strategy, pair: str, history: pd.DataFrame, portfolio
     cooldown = strategy._compute_buy_cooldown(confirmed_state, cfg, effective_risk_score)
     cooldown, cooldown_guard = strategy._adjust_buy_cooldown(buy_setup, cooldown)
     days_since_buy = strategy._call_count - strategy._last_buy_call
+    min_adj_threshold = (
+        strategy.BULL_GUARD_TARGET_GAP_THRESHOLD
+        if bull_guard and hasattr(strategy, "BULL_GUARD_TARGET_GAP_THRESHOLD")
+        else strategy.MIN_ADJUST_THRESHOLD
+    )
+    threshold_blocked = gap <= min_adj_threshold
+    cooldown_remaining = max(int(cooldown - days_since_buy), 0)
+    btc_tgap_mult = (
+        getattr(strategy, "BTC_BEAR_TARGET_GAP_MULT", 1.0)
+        if buy_setup == "target-gap" and str(latest.get("btc_regime", "")) == "BEAR"
+        else 1.0
+    )
+
+    lift_trigger = is_lagging_recovery_lift_trigger(
+        latest=latest,
+        price=price,
+        confirmed_state=confirmed_state,
+        trend_risk=trend_risk,
+    )
+    lifted_buy_target = buy_target
+    if lift_trigger:
+        lifted_buy_target = max(buy_target, min((buy_target + 0.65) / 2.0, 0.65, strategy._target_cap()))
+    lifted_gap = lifted_buy_target - current_pct
+    lifted_base_max_buy = compute_base_max_buy(
+        strategy=strategy,
+        cfg=cfg,
+        buy_target=lifted_buy_target,
+        current_pct=current_pct,
+        trend_continuation=trend_continuation,
+        safe_recovery=safe_recovery,
+        recovery_override=recovery_override,
+        pullback_buy=pullback_buy,
+    )
+    lifted_adjusted_max_buy, lifted_buy_guard = strategy._adjust_buy_execution(
+        latest=latest,
+        price=price,
+        raw_state=raw_state,
+        buy_setup=buy_setup,
+        max_buy=lifted_base_max_buy,
+        confirmed_state=confirmed_state,
+    )
+    lifted_threshold_blocked = lifted_gap <= min_adj_threshold
+    lifted_buy_capacity = max(0.0, min(lifted_gap, lifted_adjusted_max_buy))
+    lifted_ignoring_cooldown_buy_pct = 0.0 if lifted_threshold_blocked else lifted_buy_capacity
+    lifted_executable_buy_pct = (
+        lifted_ignoring_cooldown_buy_pct
+        if not (days_since_buy < cooldown)
+        else 0.0
+    )
 
     return {
         "portfolio_value": _portfolio_value(portfolio, pair, price),
@@ -250,9 +306,28 @@ def compute_target_context(strategy, pair: str, history: pd.DataFrame, portfolio
         "sell_target": sell_target,
         "buy_target": buy_target,
         "target_gap": gap,
+        "days_since_last_buy": days_since_buy,
+        "cooldown_remaining": cooldown_remaining,
+        "min_adj_threshold": min_adj_threshold,
+        "current_gap": gap,
+        "threshold_blocked": threshold_blocked,
         "base_max_buy": base_max_buy,
         "adjusted_max_buy": adjusted_max_buy,
-        "executable_buy_pct": max(0.0, min(gap, adjusted_max_buy)),
+        "btc_tgap_mult": btc_tgap_mult,
+        "cost_guard_active": "v2_4_cost_" in str(buy_guard),
+        "executable_buy_pct": 0.0 if threshold_blocked or days_since_buy < cooldown else max(0.0, min(gap, adjusted_max_buy)),
+        "ignoring_cooldown_buy_pct": 0.0 if threshold_blocked else max(0.0, min(gap, adjusted_max_buy)),
+        "lagging_recovery_lift_trigger": lift_trigger,
+        "lifted_buy_target": lifted_buy_target,
+        "lifted_target_delta": lifted_buy_target - buy_target,
+        "lifted_current_gap": lifted_gap,
+        "lifted_threshold_blocked": lifted_threshold_blocked,
+        "lifted_base_max_buy": lifted_base_max_buy,
+        "lifted_adjusted_max_buy": lifted_adjusted_max_buy,
+        "lifted_cost_guard_active": "v2_4_cost_" in str(lifted_buy_guard),
+        "lifted_executable_buy_pct": lifted_executable_buy_pct,
+        "lifted_ignoring_cooldown_buy_pct": lifted_ignoring_cooldown_buy_pct,
+        "lifted_buy_guard": lifted_buy_guard,
         "raw_state": raw_state,
         "confirmed_state": confirmed_state,
         "trend_risk": trend_risk,
@@ -270,6 +345,7 @@ def compute_target_context(strategy, pair: str, history: pd.DataFrame, portfolio
         "buy_guard": buy_guard,
         "cooldown_guard": cooldown_guard,
         "ema24": latest.get("ema24"),
+        "ema24_slope": latest.get("ema24_slope"),
         "ema72": latest.get("ema72"),
         "ema72_slope": latest.get("ema72_slope"),
         "ema168": latest.get("ema168"),
@@ -279,6 +355,59 @@ def compute_target_context(strategy, pair: str, history: pd.DataFrame, portfolio
         "atr_pct_rank": latest.get("atr_pct_rank"),
         "donchian_pos": latest.get("donchian_pos"),
     }
+
+
+def compute_base_max_buy(
+    *,
+    strategy,
+    cfg: dict,
+    buy_target: float,
+    current_pct: float,
+    trend_continuation: bool,
+    safe_recovery: bool,
+    recovery_override: bool,
+    pullback_buy: bool,
+) -> float:
+    gap = max(buy_target - current_pct, 0.0)
+    if trend_continuation:
+        return min(cfg.get("max_buy", 0.25) * strategy.TREND_CONTINUATION_MAX_BUY_MULT, gap)
+    if safe_recovery:
+        return min(cfg.get("max_buy", 0.25) * 2.0, gap)
+    if recovery_override and hasattr(strategy, "RECOVERY_BUY_SIZE_MULT"):
+        return min(cfg.get("max_buy", 0.25) * strategy.RECOVERY_BUY_SIZE_MULT, gap)
+    if pullback_buy:
+        return min(cfg.get("max_buy", 0.25) * 1.5, gap)
+    return cfg.get("max_buy", 0.25)
+
+
+def is_lagging_recovery_lift_trigger(
+    *,
+    latest: pd.Series,
+    price: float,
+    confirmed_state: str,
+    trend_risk: int,
+) -> bool:
+    if confirmed_state != "BEAR" or price <= 0:
+        return False
+    if str(latest.get("btc_regime", "")) == "BEAR":
+        return False
+    atr_rank = latest.get("atr_pct_rank")
+    if not pd.isna(atr_rank) and atr_rank >= 0.85:
+        return False
+
+    ema24 = latest.get("ema24")
+    ema72 = latest.get("ema72")
+    ema24_slope = latest.get("ema24_slope")
+    ema72_slope = latest.get("ema72_slope")
+    if pd.isna(ema24) or pd.isna(ema24_slope) or price <= ema24 or ema24_slope <= 0:
+        return False
+    if trend_risk <= 2:
+        return True
+    if trend_risk == 3:
+        price_above_ema72 = not pd.isna(ema72) and price > ema72
+        ema72_rising = not pd.isna(ema72_slope) and ema72_slope > 0
+        return bool(price_above_ema72 or ema72_rising)
+    return False
 
 
 def summarize(detail: pd.DataFrame) -> pd.DataFrame:
@@ -307,6 +436,31 @@ def summarize(detail: pd.DataFrame) -> pd.DataFrame:
             "recovery_like_mean_gap": recovery_like["target_gap"].mean(),
             "recovery_like_target_ge_70_pct": pct((recovery_like["buy_target"] >= 0.70).mean()),
             "recovery_like_current_ge_70_pct": pct((recovery_like["current_pct"] >= 0.70).mean()),
+        })
+    return pd.DataFrame(rows)
+
+
+def summarize_blockers(blockers: pd.DataFrame) -> pd.DataFrame:
+    if blockers.empty:
+        return pd.DataFrame()
+    rows = []
+    for pair, group in blockers.groupby("pair"):
+        rows.append({
+            "pair": pair,
+            "trigger_days": len(group),
+            "cooldown_blocked_pct": pct(group["cooldown_blocked"].mean()),
+            "threshold_blocked_pct": pct(group["lifted_threshold_blocked"].mean()),
+            "cost_guard_active_pct": pct(group["lifted_cost_guard_active"].mean()),
+            "mean_days_since_last_buy": group["days_since_last_buy"].mean(),
+            "mean_cooldown_remaining": group["cooldown_remaining"].mean(),
+            "mean_original_gap": group["current_gap"].mean(),
+            "mean_lifted_gap": group["lifted_current_gap"].mean(),
+            "mean_base_max_buy": group["lifted_base_max_buy"].mean(),
+            "mean_adjusted_max_buy": group["lifted_adjusted_max_buy"].mean(),
+            "mean_executable_buy_pct": group["lifted_executable_buy_pct"].mean(),
+            "mean_ignoring_cooldown_buy_pct": group["lifted_ignoring_cooldown_buy_pct"].mean(),
+            "days_with_any_ignoring_cooldown_buy": int((group["lifted_ignoring_cooldown_buy_pct"] > 0).sum()),
+            "days_with_any_executable_buy": int((group["lifted_executable_buy_pct"] > 0).sum()),
         })
     return pd.DataFrame(rows)
 
