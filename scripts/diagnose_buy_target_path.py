@@ -144,6 +144,7 @@ def enrich_detail(detail: pd.DataFrame) -> pd.DataFrame:
         detail.loc[idx, "next_90d_return"] = prices.shift(-90).reindex(idx).to_numpy() / prices.to_numpy() - 1.0
         detail.loc[idx, "trend_risk_change_3d"] = group["trend_risk"].diff(3)
         detail.loc[idx, "raw_state_consecutive_non_bear"] = consecutive_true(group["raw_state"] != "BEAR")
+        detail.loc[idx, "ema24_above_ema72_days"] = consecutive_true(group["ema24"] > group["ema72"])
         detail.loc[idx, "next_safe_recovery_days"] = next_matching_action_days(group, "safe-recovery")
         detail.loc[idx, "next_buy_days"] = next_matching_action_days(group, "buy")
     return detail
@@ -398,6 +399,13 @@ def compute_target_context(strategy, pair: str, history: pd.DataFrame, portfolio
         "ema72_slope": latest.get("ema72_slope"),
         "ema168": latest.get("ema168"),
         "ema168_slope": latest.get("ema168_slope"),
+        "price_vs_ema168": (price / latest.get("ema168") - 1.0) if not pd.isna(latest.get("ema168")) and latest.get("ema168") > 0 else float("nan"),
+        "ema24_vs_ema168": (latest.get("ema24") / latest.get("ema168") - 1.0) if not pd.isna(latest.get("ema24")) and not pd.isna(latest.get("ema168")) and latest.get("ema168") > 0 else float("nan"),
+        "ema72_vs_ema168": (latest.get("ema72") / latest.get("ema168") - 1.0) if not pd.isna(latest.get("ema72")) and not pd.isna(latest.get("ema168")) and latest.get("ema168") > 0 else float("nan"),
+        "dd_from_120d_high": latest.get("dd_from_120d_high"),
+        "dd_from_180d_high": latest.get("dd_from_180d_high"),
+        "rolling_365d_pos": latest.get("rolling_365d_pos"),
+        "volume_strength": latest.get("volume_strength"),
         "roc_10": latest.get("roc_10"),
         "roc_20": latest.get("roc_20"),
         "atr_pct_rank": latest.get("atr_pct_rank"),
