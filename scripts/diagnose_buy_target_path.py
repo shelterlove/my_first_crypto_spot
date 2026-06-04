@@ -38,7 +38,7 @@ def main() -> None:
         frame["btc_regime"] = btc_regime.reindex(frame.index).ffill().fillna("RANGE")
         rows.extend(run_pair_diagnostic(pair, frame, args))
 
-    detail = pd.DataFrame(rows)
+    detail = enrich_detail(pd.DataFrame(rows))
     detail.to_csv(output_dir / "buy_target_path_detail.csv", index=False)
     blockers = detail[detail["lagging_recovery_lift_trigger"]].copy()
     blockers.to_csv(output_dir / "lagging_recovery_execution_blockers.csv", index=False)
@@ -130,6 +130,51 @@ def run_pair_diagnostic(pair: str, frame: pd.DataFrame, args: argparse.Namespace
             **context,
         })
     return rows
+
+
+def enrich_detail(detail: pd.DataFrame) -> pd.DataFrame:
+    if detail.empty:
+        return detail
+    detail = detail.sort_values(["pair", "date"]).copy()
+    for _, group in detail.groupby("pair", sort=False):
+        idx = group.index
+        prices = group["price"]
+        detail.loc[idx, "next_30d_return"] = prices.shift(-30).reindex(idx).to_numpy() / prices.to_numpy() - 1.0
+        detail.loc[idx, "next_60d_return"] = prices.shift(-60).reindex(idx).to_numpy() / prices.to_numpy() - 1.0
+        detail.loc[idx, "next_90d_return"] = prices.shift(-90).reindex(idx).to_numpy() / prices.to_numpy() - 1.0
+        detail.loc[idx, "trend_risk_change_3d"] = group["trend_risk"].diff(3)
+        detail.loc[idx, "raw_state_consecutive_non_bear"] = consecutive_true(group["raw_state"] != "BEAR")
+        detail.loc[idx, "next_safe_recovery_days"] = next_matching_action_days(group, "safe-recovery")
+        detail.loc[idx, "next_buy_days"] = next_matching_action_days(group, "buy")
+    return detail
+
+
+def consecutive_true(mask: pd.Series) -> list[int]:
+    streak = 0
+    out = []
+    for value in mask.fillna(False):
+        streak = streak + 1 if bool(value) else 0
+        out.append(streak)
+    return out
+
+
+def next_matching_action_days(group: pd.DataFrame, pattern: str) -> list[float]:
+    dates = pd.to_datetime(group["date"] if "date" in group else group.index, utc=True)
+    if pattern == "buy":
+        match_dates = dates[group["action"].eq("buy").to_numpy()]
+    else:
+        match_dates = dates[group["action_reason"].str.contains(pattern, na=False).to_numpy()]
+    out = []
+    sorted_matches = list(match_dates)
+    cursor = 0
+    for date in dates:
+        while cursor < len(sorted_matches) and sorted_matches[cursor] < date:
+            cursor += 1
+        if cursor >= len(sorted_matches):
+            out.append(float("nan"))
+        else:
+            out.append(float((sorted_matches[cursor] - date).days))
+    return out
 
 
 def compute_target_context(strategy, pair: str, history: pd.DataFrame, portfolio: PortfolioState, price: float) -> dict:
@@ -303,6 +348,9 @@ def compute_target_context(strategy, pair: str, history: pd.DataFrame, portfolio
     return {
         "portfolio_value": _portfolio_value(portfolio, pair, price),
         "current_pct": current_pct,
+        "avg_cost": pos.avg_cost,
+        "price_vs_avg_entry_pct": (price / pos.avg_cost - 1.0) if pos.quantity > 1e-12 and pos.avg_cost > 0 else float("nan"),
+        "unrealized_pnl_pct": (price / pos.avg_cost - 1.0) if pos.quantity > 1e-12 and pos.avg_cost > 0 else float("nan"),
         "sell_target": sell_target,
         "buy_target": buy_target,
         "target_gap": gap,
