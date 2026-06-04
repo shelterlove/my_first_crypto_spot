@@ -85,9 +85,13 @@ class CryptoSpotV26(IStrategy):
         if dataframe.empty:
             return dataframe
 
+        native_delta = dataframe.get("native_delta_pct", 0.0).astype(float).abs()
+        native_current = dataframe.get("native_current_pct", 0.0).astype(float)
+        full_exit_buffer = max(self.min_delta_pct * 0.5, 0.005)
         mask = (
             (dataframe.get("native_action", "") == "sell")
-            & (dataframe.get("native_delta_pct", 0.0).astype(float).abs() >= self.min_delta_pct)
+            & (native_delta >= self.min_delta_pct)
+            & (native_delta >= (native_current - full_exit_buffer))
         )
         dataframe.loc[mask, "exit_long"] = 1
         dataframe.loc[mask, "exit_tag"] = dataframe.loc[mask, "native_reason"].astype(str).str[:255]
