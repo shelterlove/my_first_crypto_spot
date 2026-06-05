@@ -91,6 +91,7 @@ def load_candles() -> dict[str, pd.DataFrame]:
         frame["btc_regime"] = btc_regime.reindex(frame.index).ffill().fillna("RANGE")
         frame["market_state"] = frame.apply(strategy_utils.detect_market_state, axis=1)
         frame["mixed_label"] = frame.apply(label_mixed_row, axis=1)
+        frame["mixed_quality"] = frame.apply(label_mixed_quality, axis=1)
         result[pair] = frame
     return result
 
@@ -155,6 +156,22 @@ def label_mixed_row(row: pd.Series) -> str:
     return "NEUTRAL_MIXED"
 
 
+def label_mixed_quality(row: pd.Series) -> str:
+    if row.get("market_state") != "MIXED":
+        return "NOT_MIXED"
+    price = row.get("close", 0.0)
+    ema72 = row.get("ema72")
+    ema168 = row.get("ema168")
+    ema168_slope = row.get("ema168_slope")
+    if any(pd.isna(v) for v in (ema72, ema168, ema168_slope)):
+        return "MIXED_NEUTRAL"
+    if price > ema72 and ema72 > ema168 and ema168_slope > 0 and str(row.get("btc_regime", "")) != "BEAR":
+        return "MIXED_UPTREND"
+    if price < ema168 or ema72 < ema168 or str(row.get("btc_regime", "")) == "BEAR":
+        return "MIXED_WEAK"
+    return "MIXED_NEUTRAL"
+
+
 def build_mixed_rows(
     candles: dict[str, pd.DataFrame],
     start: pd.Timestamp,
@@ -168,6 +185,7 @@ def build_mixed_rows(
                 "pair": pair,
                 "date": idx.strftime("%Y-%m-%d"),
                 "mixed_label": row["mixed_label"],
+                "mixed_quality": row["mixed_quality"],
                 "close": row["close"],
                 "btc_regime": row["btc_regime"],
                 "rolling_365d_pos": row["rolling_365d_pos"],
@@ -247,6 +265,7 @@ def enrich_target_reduce(pair: str, ts: pd.Timestamp, tag: str, result_zip: Path
         "pair": pair,
         "date": ts.strftime("%Y-%m-%d"),
         "mixed_label": row["mixed_label"],
+        "mixed_quality": row["mixed_quality"],
         "tag": tag,
         "result_zip": relative_path(result_zip),
         "close": row["close"],
@@ -313,25 +332,33 @@ def forward_extreme(frame: pd.DataFrame, loc: int, horizon: int, direction: str)
 def summarize_bars(rows: pd.DataFrame) -> pd.DataFrame:
     if rows.empty:
         return pd.DataFrame()
-    return summarize_group(rows, ["mixed_label"])
+    by_label = summarize_group(rows, ["mixed_label"])
+    by_quality = summarize_group(rows, ["mixed_quality"])
+    return pd.concat([by_label, by_quality], ignore_index=True)
 
 
 def summarize_bars_by_pair(rows: pd.DataFrame) -> pd.DataFrame:
     if rows.empty:
         return pd.DataFrame()
-    return summarize_group(rows, ["pair", "mixed_label"])
+    by_label = summarize_group(rows, ["pair", "mixed_label"])
+    by_quality = summarize_group(rows, ["pair", "mixed_quality"])
+    return pd.concat([by_label, by_quality], ignore_index=True)
 
 
 def summarize_target_reduce(rows: pd.DataFrame) -> pd.DataFrame:
     if rows.empty:
         return pd.DataFrame()
-    return summarize_group(rows, ["mixed_label", "raw_state", "confirmed_state"])
+    by_label = summarize_group(rows, ["mixed_label", "raw_state", "confirmed_state"])
+    by_quality = summarize_group(rows, ["mixed_quality", "raw_state", "confirmed_state"])
+    return pd.concat([by_label, by_quality], ignore_index=True)
 
 
 def summarize_target_reduce_by_pair(rows: pd.DataFrame) -> pd.DataFrame:
     if rows.empty:
         return pd.DataFrame()
-    return summarize_group(rows, ["pair", "mixed_label", "raw_state", "confirmed_state"])
+    by_label = summarize_group(rows, ["pair", "mixed_label", "raw_state", "confirmed_state"])
+    by_quality = summarize_group(rows, ["pair", "mixed_quality", "raw_state", "confirmed_state"])
+    return pd.concat([by_label, by_quality], ignore_index=True)
 
 
 def summarize_group(frame: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
@@ -343,11 +370,15 @@ def summarize_group(frame: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
         row = dict(zip(group_cols, keys))
         row.update({
             "count": len(group),
+            "ret_20d_mean_pct": group.get("ret_20d_pct", pd.Series(dtype=float)).mean(),
             "ret_20d_median_pct": group.get("ret_20d_pct", pd.Series(dtype=float)).median(),
+            "ret_60d_mean_pct": group.get("ret_60d_pct", pd.Series(dtype=float)).mean(),
             "ret_60d_median_pct": group.get("ret_60d_pct", pd.Series(dtype=float)).median(),
+            "ret_90d_mean_pct": group.get("ret_90d_pct", pd.Series(dtype=float)).mean(),
             "ret_90d_median_pct": group.get("ret_90d_pct", pd.Series(dtype=float)).median(),
             "ret_60d_positive_rate_pct": (group.get("ret_60d_pct", pd.Series(dtype=float)) > 0).mean() * 100,
             "max_down_60d_median_pct": group.get("max_down_60d_pct", pd.Series(dtype=float)).median(),
+            "target_pct_median": group.get("target_pct", pd.Series(dtype=float)).median(),
         })
         if "regret_20d" in group:
             row["regret_20d_rate_pct"] = group["regret_20d"].mean() * 100

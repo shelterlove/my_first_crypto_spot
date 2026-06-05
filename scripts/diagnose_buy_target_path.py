@@ -354,6 +354,7 @@ def compute_target_context(strategy, pair: str, history: pd.DataFrame, portfolio
         "unrealized_pnl_pct": (price / pos.avg_cost - 1.0) if pos.quantity > 1e-12 and pos.avg_cost > 0 else float("nan"),
         "sell_target": sell_target,
         "buy_target": buy_target,
+        "vol_multiplier": vol_multiplier,
         "target_gap": gap,
         "days_since_last_buy": days_since_buy,
         "cooldown_remaining": cooldown_remaining,

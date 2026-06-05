@@ -294,7 +294,12 @@ def run_backtest(
 
 def write_exchange_override_config(config_path: str, exchange_name: str, run_dir: Path) -> Path:
     base_config = json.loads(Path(config_path).read_text(encoding="utf-8"))
-    base_config.setdefault("exchange", {})["name"] = exchange_name
+    exchange = base_config.setdefault("exchange", {})
+    exchange["name"] = exchange_name
+    if exchange_name == "binance":
+        spot_options = {"defaultType": "spot", "fetchMarkets": ["spot"]}
+        exchange.setdefault("ccxt_config", {}).setdefault("options", {}).update(spot_options)
+        exchange.setdefault("ccxt_async_config", {}).setdefault("options", {}).update(spot_options)
     out = run_dir / "config.exchange_override.json"
     out.write_text(json.dumps(base_config, indent=2), encoding="utf-8")
     return out

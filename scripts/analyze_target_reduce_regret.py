@@ -15,6 +15,7 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 DATA_DIR = PROJECT_ROOT / "freqtrade_user_data" / "data" / "binance"
+INITIAL_CASH = {"BTC/USDT": 333.0, "ETH/USDT": 333.0, "BNB/USDT": 334.0}
 DEFAULT_RUN = PROJECT_ROOT / "results" / "freqtrade_eval" / "baseline_v2_19B_fixed_adj_20260602"
 DEFAULT_OUTPUT = PROJECT_ROOT / "results" / "diagnostics"
 TARGET_TAG_RE = re.compile(
@@ -100,6 +101,7 @@ def extract_target_reduce_events(
     end: pd.Timestamp | None = None,
 ) -> list[dict]:
     events: list[dict] = []
+    decision_cache: dict[tuple[str, str, int], str] = {}
     for result_zip in sorted(run_dir.rglob("backtest-result-*.zip")):
         orders_by_pair: dict[str, list[dict]] = {}
         for trade in parse_trades(result_zip):
@@ -108,9 +110,28 @@ def extract_target_reduce_events(
 
         for pair, orders in orders_by_pair.items():
             orders = sorted(orders, key=lambda item: item["date"])
+            cash = INITIAL_CASH.get(pair, 333.0)
+            quantity = 0.0
             for i, order in enumerate(orders):
-                tag = str(order.get("ft_order_tag", ""))
-                if order.get("ft_is_entry") or "target-reduce" not in tag:
+                stored_tag = str(order.get("ft_order_tag", ""))
+                native_tag = stored_tag
+                if not order.get("ft_is_entry") and stored_tag == "partial_exit":
+                    price = float(order.get("safe_price") or 0.0)
+                    position_value = quantity * price
+                    current_pct = position_value / (cash + position_value) if cash + position_value > 0 else 0.0
+                    native_tag = classify_native_reason_at_pct(
+                        pair=pair,
+                        date=order["date"],
+                        current_pct=current_pct,
+                        cache=decision_cache,
+                    )
+                if order.get("ft_is_entry"):
+                    cash -= float(order.get("cost") or 0.0)
+                    quantity += float(order.get("amount") or 0.0)
+                else:
+                    cash += float(order.get("cost") or 0.0)
+                    quantity -= float(order.get("amount") or 0.0)
+                if order.get("ft_is_entry") or "target-reduce" not in native_tag:
                     continue
                 if start is not None and order["date"] < start:
                     continue
@@ -127,11 +148,52 @@ def extract_target_reduce_events(
                     "price": float(order.get("safe_price") or 0.0),
                     "amount": float(order.get("amount") or 0.0),
                     "cost": float(order.get("cost") or 0.0),
-                    "tag": tag,
+                    "tag": native_tag,
+                    "stored_tag": stored_tag,
                     "next_buy_date": next_buy["date"] if next_buy else pd.NaT,
                     "next_buy_price": float(next_buy.get("safe_price") or 0.0) if next_buy else None,
                 })
     return events
+
+
+def classify_native_reason_at_pct(
+    *,
+    pair: str,
+    date: pd.Timestamp,
+    current_pct: float,
+    cache: dict[tuple[str, str, int], str],
+) -> str:
+    pct_bucket = int(round(max(0.0, min(1.0, current_pct)) * 1000))
+    date_key = pd.Timestamp(date).strftime("%Y-%m-%d")
+    key = (pair, date_key, pct_bucket)
+    if key in cache:
+        return cache[key]
+    from crypto_spot_v1 import strategy_utils
+    from crypto_spot_v1.freqtrade_adapter import build_target_position_decision
+
+    raw = load_raw_pair(pair)
+    frame = raw[raw.index <= pd.Timestamp(date)].reset_index()
+    frame = strategy_utils.compute_indicators(frame)
+    decision = build_target_position_decision(
+        pair=pair,
+        dataframe=frame,
+        current_position_pct=pct_bucket / 1000.0,
+        strategy_name="v2_21E",
+        capital=100.0,
+        reserve=20.0,
+        fee_rate=0.001,
+        min_notional=0.0,
+    )
+    reason = decision.reason if decision.action == "sell" else "partial_exit"
+    cache[key] = reason
+    return reason
+
+
+def load_raw_pair(pair: str) -> pd.DataFrame:
+    path = DATA_DIR / f"{pair.replace('/', '_')}-1d.feather"
+    df = pd.read_feather(path)
+    df["date"] = pd.to_datetime(df["date"], utc=True)
+    return df.sort_values("date").set_index("date")
 
 
 def parse_trades(path: Path) -> list[dict]:
@@ -192,8 +254,18 @@ def enrich_event(event: dict, candles: dict[str, pd.DataFrame]) -> dict:
         and row["btc_regime"] != "BEAR"
     )
     row["low_risk"] = bool(row.get("risk_score", 99) <= 2 and row.get("trend_risk", 99) <= 2)
+    row["bull_target_reduce"] = bool(row.get("raw_state") == "BULL" or row.get("confirmed_state") == "BULL")
+    row["mixed_target_reduce"] = bool(row.get("raw_state") == "MIXED" or row.get("confirmed_state") == "MIXED")
+    row["constructive_mixed"] = bool(
+        row["mixed_target_reduce"]
+        and latest["close"] > latest["ema72"]
+        and latest["ema72"] > latest["ema168"]
+        and latest["ema168_slope"] > 0
+        and latest["btc_regime"] != "BEAR"
+    )
+    row["high_atr_target_reduce"] = bool((latest["atr_pct_rank"] or 0.0) >= 0.80)
 
-    for horizon in (3, 5, 10, 20, 60):
+    for horizon in (3, 5, 10, 20, 60, 90):
         row[f"ret_{horizon}d_pct"] = forward_return(df, idx, horizon)
         row[f"max_up_{horizon}d_pct"] = forward_extreme(df, idx, horizon, "max")
         row[f"max_down_{horizon}d_pct"] = forward_extreme(df, idx, horizon, "min")
@@ -307,6 +379,11 @@ def summarize(df: pd.DataFrame) -> pd.DataFrame:
     groups = [
         ("all", df),
         ("low_risk_structural_intact", df[df["low_risk"] & df["long_structure_intact"]]),
+        ("bull_target_reduce", df[df["bull_target_reduce"]]),
+        ("mixed_target_reduce", df[df["mixed_target_reduce"]]),
+        ("constructive_mixed", df[df["constructive_mixed"]]),
+        ("high_atr_target_reduce", df[df["high_atr_target_reduce"]]),
+        ("low_risk_target_reduce", df[df["low_risk"]]),
         ("other", df[~(df["low_risk"] & df["long_structure_intact"])]),
     ]
     rows = [summary_row(name, group) for name, group in groups if not group.empty]
@@ -329,11 +406,16 @@ def summary_row(name: str, group: pd.DataFrame) -> dict:
         "events": len(group),
         "regret_10d_rate_pct": (group["regret_10d"].mean() * 100),
         "regret_20d_rate_pct": (group["regret_20d"].mean() * 100),
+        "regret_60d_rate_pct": (group["regret_60d"].mean() * 100),
+        "regret_90d_rate_pct": (group["regret_90d"].mean() * 100),
         "mean_ret_10d_pct": group["ret_10d_pct"].mean(),
         "median_ret_10d_pct": group["ret_10d_pct"].median(),
         "mean_ret_20d_pct": group["ret_20d_pct"].mean(),
         "median_ret_20d_pct": group["ret_20d_pct"].median(),
+        "mean_ret_60d_pct": group["ret_60d_pct"].mean(),
         "median_ret_60d_pct": group["ret_60d_pct"].median(),
+        "mean_ret_90d_pct": group["ret_90d_pct"].mean(),
+        "median_ret_90d_pct": group["ret_90d_pct"].median(),
         "sell_helped_20d_rate_pct": group["sell_helped_20d"].mean() * 100,
         "missed_fast_repair_20d_rate_pct": group["missed_fast_repair_20d"].mean() * 100,
         "mean_next_buy_bars": group["next_buy_bars"].dropna().mean(),
