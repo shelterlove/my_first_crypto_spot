@@ -1,95 +1,79 @@
 # Crypto Spot V1
 
-Long-only crypto spot strategy research and Freqtrade deployment workspace.
+Native crypto spot strategy research workspace with a thin Freqtrade execution layer.
 
-The current strategy is `v2_19B`, exposed to Freqtrade as `CryptoSpotV219B`.
-The design goal is simple: use a rule-based EMA regime engine to keep long-term
-uptrend participation, reduce exposure in weak regimes, and avoid ML-style curve
-fitting.
+## Current Recommendation
 
-## Current Workflow
+- Paper-trading candidate: `v3_4I`
+- Freqtrade shell: `CryptoSpotV34I`
+- Research baseline: `v3`
 
-Run the Freqtrade-aligned evaluator:
+Recent `v3_5D ~ v3_5H` experiments improved the interpretation of MIXED rebuy
+execution, but they did not beat `v3_4I` robustly enough to replace it.
+
+## What This Repo Contains
+
+- native strategy logic under `src/crypto_spot_v1`
+- diagnostic and evaluation scripts under `scripts/`
+- thin Freqtrade shells under `freqtrade_user_data/strategies/`
+- backtest and paper-trading config under `configs/` and `freqtrade_user_data/config/`
+
+## Recommended Workflow
+
+### 1. Native research and diagnostics
 
 ```powershell
-python scripts\freqtrade_eval.py --strategy CryptoSpotV219B --timerange 20200101-20260601 --report-window 20251202-20260601 --run-id baseline_v2_19B
+python scripts\run_window_candidate_test.py --candidate v3_4I --baseline v3 --start 2019-01-01 --end 2024-12-31
+python scripts\render_fund_style_report.py --strategy v3_4I --start 2023-05-22 --end 2026-05-22
 ```
 
-Run rolling evaluation presets:
+### 2. Freqtrade adapter validation
 
 ```powershell
-python scripts\freqtrade_eval.py --strategy CryptoSpotV219B --timerange 20200101-20260601 --rolling-preset standard --run-id rolling_v2_19B
-```
-
-The evaluator reports:
-
-- per-pair fixed-allocation results for `BTC/USDT`, `ETH/USDT`, and `BNB/USDT`;
-- a synthetic fixed-allocation aggregate portfolio;
-- optional rolling windows with both per-pair and aggregate detail.
-
-Shared-wallet portfolio tests are intentionally excluded from this evaluator.
-The strategy is reviewed as three independent fixed capital sleeves plus their
-equal-weight aggregate.
-
-## Useful Commands
-
-```powershell
-python -m py_compile scripts\freqtrade_eval.py scripts\generate_daily_signal.py scripts\check_freqtrade_adapter.py
 python scripts\check_freqtrade_adapter.py
-python scripts\generate_daily_signal.py --strategy v2_19B
+freqtrade list-strategies --userdir freqtrade_user_data
 ```
 
-Native research backtests are still available for strategy prototyping:
+### 3. Paper trading
 
 ```powershell
-python scripts\run_v1_4_remaining.py
+freqtrade trade --userdir freqtrade_user_data --config freqtrade_user_data/config/config.dryrun.example.json --strategy CryptoSpotV34I
 ```
 
-## Repository Layout
+## Key Files
 
 ```text
-configs/
-  backtest_v1.json
+src/crypto_spot_v1/
+  strategy.py
+  strategy_candidates.py
+  freqtrade_adapter.py
+  benchmark.py
+
+scripts/
+  run_window_candidate_test.py
+  render_fund_style_report.py
+  generate_daily_signal.py
+  check_freqtrade_adapter.py
+  freqtrade_eval.py
 
 freqtrade_user_data/
   config/config.dryrun.example.json
   strategies/CryptoSpotV26.py
-  strategies/CryptoSpotV219B.py
+  strategies/CryptoSpotV34I.py
 
-scripts/
-  freqtrade_eval.py
-  check_freqtrade_adapter.py
-  generate_daily_signal.py
-  run_v1_4_remaining.py
-  run_v1_backtest.py
-
-src/crypto_spot_v1/
-  strategy.py
-  strategy_candidates.py
-  strategy_utils.py
-  freqtrade_adapter.py
-  benchmark.py
-  evaluation.py
-  metrics.py
+docs/
+  PAPER_TRADING_READINESS.md
 ```
 
-## Cleanup Policy
+## Server Migration and Dry-Run Setup
 
-Generated outputs are not source of truth and should not be committed:
+Use the deployment guide:
 
-- `results/`
-- `freqtrade_user_data/backtest_results/`
-- Python `__pycache__/`
+- [docs/FREQTRADE_PAPER_TRADING_DEPLOYMENT.md](docs/FREQTRADE_PAPER_TRADING_DEPLOYMENT.md)
+- [docs/FREQTRADE_PAPER_TRADING_DEPLOYMENT_CN.md](docs/FREQTRADE_PAPER_TRADING_DEPLOYMENT_CN.md)
 
-Keep downloaded market data under `freqtrade_user_data/data/` when it is needed
-for repeatable local Freqtrade backtests.
+## Notes
 
-## Development Rules
-
-- Keep strategy logic in `src/crypto_spot_v1`.
-- Keep Freqtrade strategy files thin; they should adapt lifecycle and execution,
-  not duplicate strategy rules.
-- Evaluate new ideas first with the lightweight Freqtrade evaluator.
-- Use rolling windows only for candidates that pass basic screening.
-- Prefer fewer metrics that affect decisions: return, excess return, win rate,
-  max drawdown, exposure, trade count, and rolling stability.
+- Strategy logic should stay in `src/crypto_spot_v1`.
+- Freqtrade shells should remain thin adapters.
+- `results/` and downloaded market data are generated artifacts, not source of truth.

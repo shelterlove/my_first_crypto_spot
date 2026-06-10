@@ -2,14 +2,32 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .env
+.env.*
 .venv*/
 .claude/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+coverage.xml
+
+# Local editor / OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
 
 results/
 freqtrade_user_data/backtest_results/
 freqtrade_user_data/data/
 freqtrade_user_data/logs/
 freqtrade_user_data/hyperopt_results/
+
+# Local runtime configs and secrets
+freqtrade_user_data/config/config.dryrun.json
+freqtrade_user_data/config/config.live.json
+freqtrade_user_data/config/config.local*.json
+
+# Local exports / reports
+*.feather
+*.parquet

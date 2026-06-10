@@ -2,40 +2,61 @@
 
 ## Current Candidate
 
-- Native strategy: `v2_21E`
-- Freqtrade strategy: `CryptoSpotV221E`
-- Evaluation model: fixed allocation per pair plus equal-weight aggregate
-- Status: reference candidate passed fixed-allocation baseline plus quick and
-  standard rolling review; paper trading still requires live signal audit.
+- Native strategy: `v3_4I`
+- Freqtrade shell: `CryptoSpotV34I`
+- Runtime model: one dry-run bot, three fixed pairs (`BTC/USDT`, `ETH/USDT`, `BNB/USDT`)
+- Status: suitable for paper trading; not yet approved for real capital
+
+`v3_4I` is the current recommended paper-trading candidate because:
+
+- it beats `buy_hold` on the full `2019-01-01 ~ 2026-05-22` single-pair windows;
+- it remains the cleanest promoted version after the later `v3_5x` execution experiments;
+- its recent optimization deltas are narrow and auditable.
+
+## Why `v3_4I`
+
+- `v3` is the stable native baseline.
+- `v3_4I` adds only the sell-side changes that stayed clean in validation:
+  - BTC mature-bull giveback trim
+  - inherited narrow trailing-profit-take behavior that remained acceptable
+- later `v3_5D ~ v3_5H` MIXED rebuy execution experiments improved behavior
+  interpretation but did not beat `v3_4I` robustly enough to replace it.
 
 ## Readiness Gates
 
-A candidate is suitable for paper trading when it passes these checks:
+Before starting dry-run on a server, verify:
 
-- Freqtrade adapter compiles and loads.
-- Fixed-allocation per-pair reports are available for BTC, ETH, and BNB.
-- Aggregate return, excess return, win rate, drawdown, exposure, and trade count
-  are reviewed over full-period and rolling-window runs.
-- `review/report.html`, `score.json`, and promotion checks are generated and
-  archived for the candidate.
-- No unexplained divergence exists between native strategy state and Freqtrade
-  entry/exit behavior.
-- Recent-window behavior is explainable from trade logs, especially losing
-  windows and prolonged cash periods.
+- Freqtrade shell loads: `CryptoSpotV34I`
+- native adapter sanity check passes
+- dry-run config uses the intended pairs and `1d` timeframe
+- downloaded data exists for BTC, ETH, and BNB
+- logs and signal artifacts are writable on the server
+- API keys, if configured, are exchange read-only or dry-run only
 
-## Paper Trading Rules
+## Dry-Run Rules
 
-- Freeze strategy code and parameters before starting the paper window.
-- Keep the bot in dry-run for at least 3 months.
-- Review every generated action reason before enabling real orders.
-- Track fill price, fees, skipped orders, position size, and state transitions.
-- Stop the paper test if action frequency or exposure differs materially from
-  backtest expectations.
+- Freeze strategy code before the dry-run window starts.
+- Run `v3_4I` only. Do not deploy `v3_5D ~ v3_5H`.
+- Keep `dry_run: true`.
+- Review actions at least weekly:
+  - `native_reason`
+  - stake sizing
+  - repeated partial sells or rebuy loops
+  - divergence between expected and produced states
+- Stop and investigate if live signal cadence differs materially from backtest expectations.
 
 ## Not Ready For Real Capital Until
 
-- signal cadence matches backtest expectations;
-- execution cost and slippage are within stress assumptions;
-- BTC, ETH, and BNB each have understandable behavior;
-- logs are complete enough to audit every action;
-- no emergency manual intervention is needed during the paper window.
+- 2-4 weeks of dry-run logs are clean
+- no unexplained signal churn appears in real-time operation
+- order sizing matches the intended per-pair exposure model
+- operational recovery is tested: restart, reconnect, missing data, wallet sync
+- execution assumptions are acceptable relative to backtest pricing
+
+## Recommended Validation Commands
+
+```powershell
+python scripts\check_freqtrade_adapter.py
+freqtrade list-strategies --userdir freqtrade_user_data
+freqtrade test-pairlist --userdir freqtrade_user_data --config freqtrade_user_data/config/config.dryrun.example.json
+```

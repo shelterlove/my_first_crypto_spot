@@ -44,7 +44,7 @@ def main() -> None:
     signal_frame = build_native_signal_frame(
         pair="BTC/USDT",
         dataframe=df,
-        strategy_name="v2_21E",
+        strategy_name="v3_4I",
         startup_candle_count=220,
     )
     assert "btc_regime" in signal_frame.columns
