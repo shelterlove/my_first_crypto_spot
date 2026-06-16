@@ -15,7 +15,7 @@ from CryptoSpotV26 import CryptoSpotV26  # noqa: E402
 
 
 def test_partial_native_sell_does_not_emit_full_exit_signal() -> None:
-    strategy = CryptoSpotV26({})
+    strategy = CryptoSpotV26()
     frame = pd.DataFrame(
         {
             "native_action": ["sell", "sell"],
@@ -46,10 +46,66 @@ def test_latest_native_signal_preserves_adjustment_reason() -> None:
         "sell",
         -0.10,
         "v2_21E_sell_target-reduce_r0",
+        None,
     )
+
+
+def test_clamp_sell_delta_to_actual_excess() -> None:
+    assert CryptoSpotV26._clamp_delta_to_actual_position(
+        action="sell",
+        native_delta_pct=-0.25,
+        native_target_pct=0.56,
+        actual_current_pct=0.40,
+    ) == -0.0
+    assert CryptoSpotV26._clamp_delta_to_actual_position(
+        action="sell",
+        native_delta_pct=-0.25,
+        native_target_pct=0.56,
+        actual_current_pct=0.90,
+    ) == -0.25
+    assert round(CryptoSpotV26._clamp_delta_to_actual_position(
+        action="sell",
+        native_delta_pct=-0.25,
+        native_target_pct=0.56,
+        actual_current_pct=0.66,
+    ), 6) == -0.10
+
+
+def test_clamp_buy_delta_to_actual_gap() -> None:
+    assert CryptoSpotV26._clamp_delta_to_actual_position(
+        action="buy",
+        native_delta_pct=0.30,
+        native_target_pct=0.72,
+        actual_current_pct=0.80,
+    ) == 0.0
+    assert round(CryptoSpotV26._clamp_delta_to_actual_position(
+        action="buy",
+        native_delta_pct=0.30,
+        native_target_pct=0.72,
+        actual_current_pct=0.50,
+    ), 6) == 0.22
+
+
+def test_pair_allocation_defaults_to_fixed_sleeves() -> None:
+    strategy = CryptoSpotV26()
+
+    assert strategy._pair_allocation("BTC/USDT") == 0.333
+    assert strategy._pair_allocation("ETH/USDT") == 0.333
+    assert strategy._pair_allocation("BNB/USDT") == 0.334
+    assert strategy._pair_allocation("SOL/USDT") == 1.0
+
+
+def test_pair_stake_uses_pair_allocation() -> None:
+    strategy = CryptoSpotV26()
+
+    assert round(strategy._pair_stake_amount("BNB/USDT", 1000), 6) == 334.0
 
 
 if __name__ == "__main__":
     test_partial_native_sell_does_not_emit_full_exit_signal()
     test_latest_native_signal_preserves_adjustment_reason()
+    test_clamp_sell_delta_to_actual_excess()
+    test_clamp_buy_delta_to_actual_gap()
+    test_pair_allocation_defaults_to_fixed_sleeves()
+    test_pair_stake_uses_pair_allocation()
     print("Freqtrade shell tests passed")

@@ -48,6 +48,11 @@ class CryptoSpotV26(IStrategy):
     reserve = 20.0
     min_notional = 0.0
     min_delta_pct = 0.02
+    pair_allocations = {
+        "BTC/USDT": 0.333,
+        "ETH/USDT": 0.333,
+        "BNB/USDT": 0.334,
+    }
 
     def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
         frame = dataframe.copy()
@@ -113,10 +118,18 @@ class CryptoSpotV26(IStrategy):
         dataframe = self._latest_dataframe(pair)
         if dataframe is None:
             return proposed_stake
-        action, delta_pct, _ = self._latest_native_signal(dataframe)
+        action, delta_pct, _, target_pct = self._latest_native_signal(dataframe)
         if action != "buy":
             return 0.0
-        stake = self._total_stake_amount(max_stake) * max(0.0, delta_pct)
+        delta_pct = self._clamp_delta_to_actual_position(
+            action=action,
+            native_delta_pct=delta_pct,
+            native_target_pct=target_pct,
+            actual_current_pct=0.0,
+        )
+        if delta_pct < self.min_delta_pct:
+            return 0.0
+        stake = self._pair_stake_amount(pair, max_stake) * max(0.0, delta_pct)
         if min_stake is not None and 0 < stake < min_stake:
             return 0.0
         return min(stake, max_stake)
@@ -140,15 +153,23 @@ class CryptoSpotV26(IStrategy):
         if dataframe is None or self._already_adjusted_this_candle(trade, current_time):
             return None
 
-        action, delta_pct, reason = self._latest_native_signal(dataframe)
+        action, delta_pct, reason, target_pct = self._latest_native_signal(dataframe)
+        pair_stake = self._pair_stake_amount(pair, max_stake)
+        position_value = float(getattr(trade, "amount", 0.0) or 0.0) * current_rate
+        actual_current_pct = position_value / pair_stake if pair_stake > 0 else 0.0
+        delta_pct = self._clamp_delta_to_actual_position(
+            action=action,
+            native_delta_pct=delta_pct,
+            native_target_pct=target_pct,
+            actual_current_pct=actual_current_pct,
+        )
         if abs(delta_pct) < self.min_delta_pct:
             return None
         if action == "buy":
-            stake = min(max_stake, self._total_stake_amount(max_stake) * delta_pct)
+            stake = min(max_stake, pair_stake * delta_pct)
             return stake, reason
         if action == "sell":
-            position_value = float(getattr(trade, "amount", 0.0) or 0.0) * current_rate
-            sell_value = self._total_stake_amount(max_stake) * abs(delta_pct)
+            sell_value = pair_stake * abs(delta_pct)
             return -min(position_value, sell_value), reason
         return None
 
@@ -161,16 +182,40 @@ class CryptoSpotV26(IStrategy):
 
     @staticmethod
     def _latest_native_action(dataframe: pd.DataFrame) -> tuple[str, float]:
-        action, delta_pct, _ = CryptoSpotV26._latest_native_signal(dataframe)
+        action, delta_pct, _, _ = CryptoSpotV26._latest_native_signal(dataframe)
         return action, delta_pct
 
     @staticmethod
-    def _latest_native_signal(dataframe: pd.DataFrame) -> tuple[str, float, str]:
+    def _latest_native_signal(dataframe: pd.DataFrame) -> tuple[str, float, str, float | None]:
         latest = dataframe.iloc[-1]
         action = str(latest.get("native_action", "hold"))
         delta_pct = float(latest.get("native_delta_pct", 0.0) or 0.0)
         reason = str(latest.get("native_reason", "") or "")[:255]
-        return action, delta_pct, reason
+        target_raw = latest.get("native_target_pct", None)
+        target_pct = None
+        if target_raw is not None and not pd.isna(target_raw):
+            target_pct = float(target_raw)
+        return action, delta_pct, reason, target_pct
+
+    @staticmethod
+    def _clamp_delta_to_actual_position(
+        *,
+        action: str,
+        native_delta_pct: float,
+        native_target_pct: float | None,
+        actual_current_pct: float,
+    ) -> float:
+        if native_target_pct is None:
+            return native_delta_pct
+        actual_current_pct = max(0.0, min(1.0, float(actual_current_pct)))
+        native_target_pct = max(0.0, min(1.0, float(native_target_pct)))
+        if action == "buy":
+            actual_gap = max(0.0, native_target_pct - actual_current_pct)
+            return min(max(0.0, native_delta_pct), actual_gap)
+        if action == "sell":
+            actual_excess = max(0.0, actual_current_pct - native_target_pct)
+            return -min(abs(native_delta_pct), actual_excess)
+        return native_delta_pct
 
     def _total_stake_amount(self, fallback: float) -> float:
         wallets = getattr(self, "wallets", None)
@@ -178,6 +223,17 @@ class CryptoSpotV26(IStrategy):
             return fallback
         total = getattr(wallets, "get_total_stake_amount", lambda: fallback)()
         return float(total or fallback)
+
+    def _pair_stake_amount(self, pair: str, fallback: float) -> float:
+        return self._total_stake_amount(fallback) * self._pair_allocation(pair)
+
+    def _pair_allocation(self, pair: str) -> float:
+        allocations = getattr(self, "pair_allocations", {}) or {}
+        if not isinstance(allocations, dict):
+            return 1.0
+        if pair in allocations:
+            return max(0.0, float(allocations[pair]))
+        return 1.0
 
     @staticmethod
     def _already_adjusted_this_candle(trade: Trade, current_time) -> bool:
