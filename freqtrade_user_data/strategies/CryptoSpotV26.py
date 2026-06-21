@@ -48,6 +48,9 @@ class CryptoSpotV26(IStrategy):
     reserve = 20.0
     min_notional = 0.0
     min_delta_pct = 0.02
+    bootstrap_position_alignment_enable = True
+    bootstrap_position_alignment_max_pct = 0.35
+    bootstrap_position_alignment_tag = "bootstrap-position-align"
     pair_allocations = {
         "BTC/USDT": 0.333,
         "ETH/USDT": 0.333,
@@ -76,12 +79,22 @@ class CryptoSpotV26(IStrategy):
         if dataframe.empty:
             return dataframe
 
+        native_action = dataframe.get("native_action", "")
+        native_delta = dataframe.get("native_delta_pct", 0.0).astype(float)
+        native_current = dataframe.get("native_current_pct", 0.0).astype(float)
         mask = (
-            (dataframe.get("native_action", "") == "buy")
-            & (dataframe.get("native_delta_pct", 0.0).astype(float) >= self.min_delta_pct)
+            (native_action == "buy")
+            & (native_delta >= self.min_delta_pct)
         )
         dataframe.loc[mask, "enter_long"] = 1
         dataframe.loc[mask, "enter_tag"] = dataframe.loc[mask, "native_reason"].astype(str).str[:255]
+        bootstrap_mask = (
+            bool(self.bootstrap_position_alignment_enable)
+            & (native_action == "hold")
+            & (native_current >= self.min_delta_pct)
+        )
+        dataframe.loc[bootstrap_mask, "enter_long"] = 1
+        dataframe.loc[bootstrap_mask, "enter_tag"] = self.bootstrap_position_alignment_tag
         return dataframe
 
     def populate_exit_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
@@ -119,14 +132,17 @@ class CryptoSpotV26(IStrategy):
         if dataframe is None:
             return proposed_stake
         action, delta_pct, _, target_pct = self._latest_native_signal(dataframe)
-        if action != "buy":
+        if action == "buy":
+            delta_pct = self._clamp_delta_to_actual_position(
+                action=action,
+                native_delta_pct=delta_pct,
+                native_target_pct=target_pct,
+                actual_current_pct=0.0,
+            )
+        elif self._is_bootstrap_entry(action=action, entry_tag=entry_tag):
+            delta_pct = self._latest_bootstrap_delta_pct(dataframe)
+        else:
             return 0.0
-        delta_pct = self._clamp_delta_to_actual_position(
-            action=action,
-            native_delta_pct=delta_pct,
-            native_target_pct=target_pct,
-            actual_current_pct=0.0,
-        )
         if delta_pct < self.min_delta_pct:
             return 0.0
         stake = self._pair_stake_amount(pair, max_stake) * max(0.0, delta_pct)
@@ -196,6 +212,22 @@ class CryptoSpotV26(IStrategy):
         if target_raw is not None and not pd.isna(target_raw):
             target_pct = float(target_raw)
         return action, delta_pct, reason, target_pct
+
+    def _latest_bootstrap_delta_pct(self, dataframe: pd.DataFrame) -> float:
+        latest = dataframe.iloc[-1]
+        current_raw = latest.get("native_current_pct", 0.0)
+        native_current_pct = 0.0 if pd.isna(current_raw) else float(current_raw or 0.0)
+        return min(
+            max(0.0, native_current_pct),
+            max(0.0, float(self.bootstrap_position_alignment_max_pct)),
+        )
+
+    def _is_bootstrap_entry(self, *, action: str, entry_tag: str | None) -> bool:
+        return bool(
+            self.bootstrap_position_alignment_enable
+            and action == "hold"
+            and entry_tag == self.bootstrap_position_alignment_tag
+        )
 
     @staticmethod
     def _clamp_delta_to_actual_position(

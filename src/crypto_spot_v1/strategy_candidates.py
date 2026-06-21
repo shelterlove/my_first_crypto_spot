@@ -13974,6 +13974,176 @@ class V316AStrategy(V315FStrategy):
         )
 
 
+class V317AStrategy(V316AStrategy):
+    """V3.17A: add transition-context diagnostics without changing execution."""
+
+    VERSION_LABEL = "v3_17A"
+
+    @property
+    def name(self) -> str:
+        return "v3_17A"
+
+    def _maybe_buy(
+        self,
+        *,
+        symbol: str,
+        latest: pd.Series,
+        price: float,
+        current_pct: float,
+        total_value: float,
+        buy_target: float,
+        market: dict,
+        signals: dict,
+        trend_continuation: bool,
+        safe_recovery: bool,
+        recovery_override: bool,
+        pullback_buy: bool,
+    ) -> list[Action]:
+        actions = super()._maybe_buy(
+            symbol=symbol,
+            latest=latest,
+            price=price,
+            current_pct=current_pct,
+            total_value=total_value,
+            buy_target=buy_target,
+            market=market,
+            signals=signals,
+            trend_continuation=trend_continuation,
+            safe_recovery=safe_recovery,
+            recovery_override=recovery_override,
+            pullback_buy=pullback_buy,
+        )
+        return [self._with_transition_guard(action, latest=latest, price=price, market=market) for action in actions]
+
+    def _maybe_sell(
+        self,
+        *,
+        symbol: str,
+        latest: pd.Series,
+        price: float,
+        pos: PositionState,
+        current_pct: float,
+        total_value: float,
+        sell_target: float,
+        market: dict,
+    ) -> list[Action]:
+        actions = super()._maybe_sell(
+            symbol=symbol,
+            latest=latest,
+            price=price,
+            pos=pos,
+            current_pct=current_pct,
+            total_value=total_value,
+            sell_target=sell_target,
+            market=market,
+        )
+        return [self._with_transition_guard(action, latest=latest, price=price, market=market) for action in actions]
+
+    def _with_transition_guard(
+        self,
+        action: Action,
+        *,
+        latest: pd.Series,
+        price: float,
+        market: dict,
+    ) -> Action:
+        guard = self._transition_guard(latest=latest, price=price, market=market)
+        if not guard:
+            return action
+        return Action(
+            symbol=action.symbol,
+            side=action.side,
+            quantity=action.quantity,
+            price=action.price,
+            reason=self._append_action_guard(action, guard),
+            order_type=action.order_type,
+        )
+
+    def _append_action_guard(self, action: Action, guard: str) -> str:
+        parsed = self._parse_action_context(action)
+        separator = "-" if parsed.get("guards") else "_"
+        return f"{action.reason}{separator}{guard}"
+
+    def _transition_guard(self, *, latest: pd.Series, price: float, market: dict) -> str:
+        context = self._transition_context(latest=latest, price=price, market=market)
+        if context == "none":
+            return ""
+        score = self._transition_score(latest=latest, price=price, market=market)
+        return f"tc_{context}_s{score}"
+
+    def _transition_context(self, *, latest: pd.Series, price: float, market: dict) -> str:
+        raw_state = str(market["raw_state"])
+        confirmed_state = str(market["confirmed_state"])
+        trend_risk = int(market["trend_risk"])
+        drawdown_risk = int(market["drawdown_risk"])
+        risk_score = int(market["risk_score"])
+        btc_regime = str(latest.get("btc_regime", ""))
+
+        price_vs_ema168 = self._v3_price_vs(latest, price, "ema168")
+        price_vs_ema72 = self._v3_price_vs(latest, price, "ema72")
+        ema24_slope = self._v3_value(latest, "ema24_slope")
+        donchian_pos = self._v3_value(latest, "donchian_pos")
+        roc_20 = self._v3_value(latest, "roc_20")
+        rolling_365d_pos = self._v3_value(latest, "rolling_365d_pos")
+
+        if any(pd.isna(value) for value in (price_vs_ema168, price_vs_ema72, ema24_slope, donchian_pos, roc_20)):
+            return "none"
+
+        if raw_state == "BEAR" or confirmed_state == "BEAR":
+            if trend_risk >= 3 or risk_score >= 3 or btc_regime == "BEAR":
+                return "failed_recovery"
+
+        if (
+            (raw_state == "BULL" or confirmed_state == "BULL")
+            and drawdown_risk == 0
+            and trend_risk <= 1
+            and (price_vs_ema72 >= 0.0 or ema24_slope > 0.0)
+        ):
+            if (
+                not pd.isna(rolling_365d_pos)
+                and rolling_365d_pos >= 0.75
+                and donchian_pos >= 0.75
+                and roc_20 >= 0.08
+            ):
+                return "mature_uptrend"
+            return "confirmed_recovery"
+
+        if (
+            (raw_state == "MIXED" or confirmed_state == "MIXED")
+            and drawdown_risk <= 1
+            and trend_risk <= 2
+            and price_vs_ema168 >= -0.08
+            and donchian_pos >= 0.45
+            and roc_20 >= -0.08
+        ):
+            return "early_recovery"
+
+        if (
+            raw_state != "BEAR"
+            and trend_risk <= 2
+            and drawdown_risk <= 1
+            and price_vs_ema168 >= -0.12
+            and donchian_pos >= 0.35
+            and roc_20 >= -0.12
+        ):
+            return "bear_repair"
+
+        return "none"
+
+    def _transition_score(self, *, latest: pd.Series, price: float, market: dict) -> int:
+        checks = [
+            self._v3_price_vs(latest, price, "ema168") >= -0.08,
+            self._v3_price_vs(latest, price, "ema72") >= -0.04,
+            self._v3_value(latest, "ema24_slope") >= -0.02,
+            self._v3_value(latest, "donchian_pos") >= 0.45,
+            self._v3_value(latest, "roc_20") >= -0.08,
+            str(latest.get("btc_regime", "")) != "BEAR",
+            int(market["drawdown_risk"]) <= 1,
+            int(market["trend_risk"]) <= 2,
+        ]
+        return sum(1 for passed in checks if bool(passed))
+
+
 class V226AStrategy(V221EStrategy):
     """V2.26A: external recovery score cap layered over v2.21E buy targets."""
 
