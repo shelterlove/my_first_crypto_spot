@@ -86,7 +86,13 @@ Build and serve the local monitor dashboard:
 
 ```powershell
 python scripts\build_monitor_dashboard_data.py
-python -m http.server 8765 --directory web\monitor
+python scripts\serve_monitor.py
+```
+
+Run the daily deployment loop in a long-lived process:
+
+```powershell
+python scripts\run_v48_daemon.py --run-at-utc 01:10 --run-on-start --execute --exchange-leverage 3 --target-gross-cap 3.00 --max-order-usdt 25
 ```
 
 Create a new experiment by subclassing the current clean strategy, registering

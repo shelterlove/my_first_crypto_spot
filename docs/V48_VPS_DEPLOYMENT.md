@@ -198,7 +198,7 @@ python scripts/build_monitor_dashboard_data.py
 Serve the static dashboard on the VPS:
 
 ```bash
-python -m http.server 8765 --directory web/monitor
+python scripts/serve_monitor.py
 ```
 
 Open:
@@ -215,6 +215,65 @@ Optional cron step after the executor:
 
 ```cron
 25 1 * * * cd /opt/crypto_spot_v1 && . .venv/bin/activate && python scripts/build_monitor_dashboard_data.py >> logs/v48_monitor.log 2>&1
+```
+
+To access the monitor directly without SSH tunneling, set credentials in `.env`:
+
+```bash
+MONITOR_HOST=0.0.0.0
+MONITOR_PORT=8765
+MONITOR_USERNAME=your_user
+MONITOR_PASSWORD=use_a_long_random_password
+```
+
+Then run:
+
+```bash
+python scripts/serve_monitor.py
+```
+
+Open:
+
+```text
+http://your-vps-ip:8765/
+```
+
+The server refuses to bind to a public interface without a username and
+password. You should still restrict the port with a firewall if possible.
+
+## Long-Running Daemon
+
+Instead of cron, you can keep one Python runner alive inside tmux. It syncs
+candles, runs the futures executor, and rebuilds monitor data once per day.
+
+Start it:
+
+```bash
+tmux new -s v48_daemon
+cd /opt/crypto_spot_v1
+source .venv/bin/activate
+python scripts/run_v48_daemon.py \
+  --run-at-utc 01:10 \
+  --run-on-start \
+  --execute \
+  --exchange-leverage 3 \
+  --target-gross-cap 3.00 \
+  --max-order-usdt 25
+```
+
+Detach with `Ctrl+b`, then `d`.
+
+Inspect:
+
+```bash
+tmux attach -t v48_daemon
+tail -f logs/v48_daemon.log
+```
+
+Stop:
+
+```bash
+tmux kill-session -t v48_daemon
 ```
 
 ## Known Limits
