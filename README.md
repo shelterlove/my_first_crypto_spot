@@ -55,7 +55,13 @@ python scripts\render_strategy_review_chart.py --strategy v4_8_eth_bnb --symbols
 Run syntax checks:
 
 ```powershell
-python -m py_compile src\crypto_spot_v1\strategy_candidates.py src\crypto_spot_v1\benchmark.py src\crypto_spot_v1\backtest_event_driven.py scripts\render_strategy_review_chart.py scripts\analyze_v42_attribution.py scripts\audit_execution_transform_trend_contribution.py scripts\generate_daily_signal.py scripts\binance_testnet_v48_executor.py scripts\binance_futures_testnet_v48_executor.py scripts\review_v48_bootstrap_walkforward.py scripts\search_v47_external_params.py
+python -m py_compile src\crypto_spot_v1\strategy_candidates.py src\crypto_spot_v1\benchmark.py src\crypto_spot_v1\backtest_event_driven.py scripts\render_strategy_review_chart.py scripts\analyze_v42_attribution.py scripts\audit_execution_transform_trend_contribution.py scripts\generate_daily_signal.py scripts\sync_binance_klines.py scripts\binance_testnet_v48_executor.py scripts\binance_futures_testnet_v48_executor.py scripts\review_v48_bootstrap_walkforward.py scripts\search_v47_external_params.py
+```
+
+Sync deployment candles into PostgreSQL:
+
+```powershell
+python scripts\sync_binance_klines.py --symbols BTC/USDT,ETH/USDT,BNB/USDT --timeframe 1d --start 2020-01-01
 ```
 
 Run the native Binance Spot Testnet executor in dry-run mode:

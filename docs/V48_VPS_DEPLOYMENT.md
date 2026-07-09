@@ -31,12 +31,52 @@ cp .env.example .env
 
 Edit `.env` on the VPS. Keep `.env` private; it is ignored by git.
 
+## Local Database
+
+Install PostgreSQL if the VPS does not already have it:
+
+```bash
+sudo apt update
+sudo apt install -y postgresql postgresql-contrib
+sudo -u postgres psql
+```
+
+Create the deployment database:
+
+```sql
+CREATE USER quant WITH PASSWORD 'quant_password';
+CREATE DATABASE quant_db OWNER quant;
+\q
+```
+
+Set `.env`:
+
+```bash
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_NAME=quant_db
+DB_USER=quant
+DB_PASSWORD=quant_password
+```
+
+Sync required daily candles directly on the VPS:
+
+```bash
+python scripts/sync_binance_klines.py \
+  --symbols BTC/USDT,ETH/USDT,BNB/USDT \
+  --timeframe 1d \
+  --start 2020-01-01
+```
+
+This creates or updates the `candles` table used by the strategy.
+
 ## Smoke Checks
 
 ```bash
 python -m py_compile \
   scripts/binance_testnet_v48_executor.py \
   scripts/binance_futures_testnet_v48_executor.py \
+  scripts/sync_binance_klines.py \
   scripts/generate_daily_signal.py
 python tests/test_v1_smoke.py
 ```
