@@ -123,11 +123,17 @@ def save_evaluation_run(
     summary_df = _summary_metrics_df(results, scores)
     actions_df = pd.DataFrame(artifacts.get("action_logs", []))
     equity_df = pd.DataFrame(artifacts.get("equity_curves", []))
+    sleeve_events_df = pd.DataFrame(artifacts.get("sleeve_events", []))
+    sleeve_daily_df = pd.DataFrame(artifacts.get("sleeve_daily", []))
 
     raw_df.to_csv(run_dir / "raw_backtest_results.csv", index=False)
     summary_df.to_csv(run_dir / "summary_metrics.csv", index=False)
     if not research_mode:
         _write_artifacts(run_dir, actions_df, equity_df)
+        if not sleeve_events_df.empty:
+            sleeve_events_df.to_csv(run_dir / "sleeve_events.csv", index=False)
+        if not sleeve_daily_df.empty:
+            sleeve_daily_df.to_csv(run_dir / "sleeve_daily.csv", index=False)
 
     metadata = _build_metadata(
         runner=runner,

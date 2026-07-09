@@ -19,6 +19,14 @@ from .strategy_rebalance import PortfolioState, PositionState
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "freqtrade_user_data" / "data" / "binance"
 BTC_PAIR = "BTC/USDT"
+DEFAULT_STRATEGY_NAME = "v4_8_eth_bnb"
+BTC_FEATURE_COLUMNS = (
+    "btc_price_vs_ema72",
+    "btc_price_vs_ema168",
+    "btc_ema24_slope",
+    "btc_ema168_slope",
+    "btc_roc_20",
+)
 
 
 @dataclass(frozen=True)
@@ -41,7 +49,7 @@ def build_target_position_decision(
     pair: str,
     dataframe: pd.DataFrame,
     current_position_pct: float,
-    strategy_name: str = "v3_4I",
+    strategy_name: str = DEFAULT_STRATEGY_NAME,
     capital: float = 100.0,
     reserve: float = 20.0,
     fee_rate: float = 0.001,
@@ -93,7 +101,7 @@ def build_native_signal_frame(
     *,
     pair: str,
     dataframe: pd.DataFrame,
-    strategy_name: str = "v3_4I",
+    strategy_name: str = DEFAULT_STRATEGY_NAME,
     capital: float = 100.0,
     reserve: float = 20.0,
     fee_rate: float = 0.001,
@@ -176,17 +184,21 @@ def _with_btc_regime(dataframe: pd.DataFrame, pair: str) -> pd.DataFrame:
     if pair == BTC_PAIR:
         source = out.copy()
         source.index = timestamps
-        regime = strategy_utils.compute_btc_regime(source)
+        btc_features = strategy_utils.compute_indicators(source)
+        btc_features["btc_regime"] = strategy_utils.compute_btc_regime(btc_features)
     else:
-        regime = _cached_btc_regime()
+        btc_features = _cached_btc_features()
 
-    out["btc_regime"] = regime.reindex(timestamps).ffill().fillna("RANGE").to_numpy()
+    aligned = btc_features.reindex(timestamps).ffill()
+    out["btc_regime"] = aligned["btc_regime"].fillna("RANGE").to_numpy()
     out["btc_regime_timestamp"] = timestamps.to_numpy()
+    for column in BTC_FEATURE_COLUMNS:
+        out[column] = aligned[column].to_numpy()
     return out
 
 
 @lru_cache(maxsize=1)
-def _cached_btc_regime() -> pd.Series:
+def _cached_btc_features() -> pd.DataFrame:
     path = DATA_DIR / "BTC_USDT-1d.feather"
     if not path.exists():
         raise FileNotFoundError(f"BTC regime source not found: {path}")
@@ -194,7 +206,14 @@ def _cached_btc_regime() -> pd.Series:
     frame["date"] = pd.to_datetime(frame["date"], utc=True)
     frame = frame.sort_values("date").set_index("date")
     frame = strategy_utils.compute_indicators(frame)
-    return strategy_utils.compute_btc_regime(frame)
+    out = pd.DataFrame(index=frame.index)
+    out["btc_regime"] = strategy_utils.compute_btc_regime(frame)
+    out["btc_price_vs_ema72"] = frame["close"] / frame["ema72"] - 1.0
+    out["btc_price_vs_ema168"] = frame["close"] / frame["ema168"] - 1.0
+    out["btc_ema24_slope"] = frame["ema24_slope"]
+    out["btc_ema168_slope"] = frame["ema168_slope"]
+    out["btc_roc_20"] = frame["roc_20"]
+    return out
 
 
 def _current_position_pct(portfolio: PortfolioState, pair: str, price: float) -> float:

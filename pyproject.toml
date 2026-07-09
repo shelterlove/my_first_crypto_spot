@@ -1,7 +1,7 @@
 [project]
 name = "crypto-spot-v1"
 version = "0.1.0"
-description = "Clean V1 migration of the accepted V6.19 crypto spot strategy."
+description = "Native V4.8 ETH/BNB crypto strategy research and Binance testnet deployment."
 requires-python = ">=3.10"
 dependencies = [
   "numpy",
@@ -9,6 +9,7 @@ dependencies = [
   "sqlalchemy",
   "psycopg2-binary",
   "python-dotenv",
+  "requests",
 ]
 
 [project.optional-dependencies]

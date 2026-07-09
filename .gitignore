@@ -3,6 +3,7 @@ __pycache__/
 *.egg-info/
 .env
 .env.*
+!.env.example
 .venv*/
 .claude/
 .pytest_cache/
@@ -18,6 +19,10 @@ Thumbs.db
 .vscode/
 
 results/
+logs/
+runtime/
+*.log
+web/monitor/data/*.json
 freqtrade_user_data/backtest_results/
 freqtrade_user_data/data/
 freqtrade_user_data/logs/

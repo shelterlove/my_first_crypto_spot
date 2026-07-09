@@ -23,7 +23,7 @@ from crypto_spot_v1.strategy_rebalance import PortfolioState, PositionState
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--strategy", default="v3_4I", help="Registered strategy name.")
+    parser.add_argument("--strategy", default="v4_8_eth_bnb", help="Registered strategy name.")
     parser.add_argument("--config", default="configs/backtest_v1.json", help="Backtest config path.")
     parser.add_argument("--output-dir", default="results/daily_signals", help="Signal output directory.")
     parser.add_argument(
@@ -93,22 +93,34 @@ def main() -> None:
 
 
 def _load_data_with_btc_regime(config: dict) -> dict[str, pd.DataFrame]:
+    symbols = list(config["symbols"])
+    load_symbols = list(dict.fromkeys(symbols + config.get("reference_symbols", [])))
     all_dfs = {
         symbol: strategy_utils.compute_indicators(load_candles_from_db(
             exchange="binance",
             symbol=symbol,
             timeframe=config["timeframe"],
         ))
-        for symbol in config["symbols"]
+        for symbol in load_symbols
     }
     if "BTC/USDT" not in all_dfs:
         return all_dfs
     btc_regime = strategy_utils.compute_btc_regime(all_dfs["BTC/USDT"])
     regime_map = dict(zip(all_dfs["BTC/USDT"]["timestamp"], btc_regime))
     regime_ts_map = dict(zip(all_dfs["BTC/USDT"]["timestamp"], all_dfs["BTC/USDT"]["timestamp"]))
+    btc = all_dfs["BTC/USDT"]
+    btc_feature_maps = {
+        "btc_price_vs_ema72": dict(zip(btc["timestamp"], btc["close"] / btc["ema72"] - 1.0)),
+        "btc_price_vs_ema168": dict(zip(btc["timestamp"], btc["close"] / btc["ema168"] - 1.0)),
+        "btc_ema24_slope": dict(zip(btc["timestamp"], btc["ema24_slope"])),
+        "btc_ema168_slope": dict(zip(btc["timestamp"], btc["ema168_slope"])),
+        "btc_roc_20": dict(zip(btc["timestamp"], btc["roc_20"])),
+    }
     for df in all_dfs.values():
         df["btc_regime"] = df["timestamp"].map(regime_map).ffill()
         df["btc_regime_timestamp"] = df["timestamp"].map(regime_ts_map).ffill()
+        for column, values in btc_feature_maps.items():
+            df[column] = df["timestamp"].map(values).ffill()
     return all_dfs
 
 

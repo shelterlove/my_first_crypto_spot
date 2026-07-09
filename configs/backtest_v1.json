@@ -1,7 +1,8 @@
 {
-  "symbols": ["BTC/USDT", "ETH/USDT", "BNB/USDT"],
+  "symbols": ["ETH/USDT", "BNB/USDT"],
+  "reference_symbols": ["BTC/USDT"],
   "timeframe": "1d",
-  "warmup_bars": 200,
+  "warmup_bars": 220,
   "execution": {
     "mode": "next_open"
   },

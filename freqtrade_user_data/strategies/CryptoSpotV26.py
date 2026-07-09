@@ -42,7 +42,7 @@ class CryptoSpotV26(IStrategy):
     process_only_new_candles = True
     use_exit_signal = True
 
-    strategy_name = "v2_6"
+    strategy_name = "v4_8_eth_bnb"
     decision_capital = 100.0
     fee_rate = 0.001
     reserve = 20.0
@@ -52,9 +52,8 @@ class CryptoSpotV26(IStrategy):
     bootstrap_position_alignment_max_pct = 0.35
     bootstrap_position_alignment_tag = "bootstrap-position-align"
     pair_allocations = {
-        "BTC/USDT": 0.333,
-        "ETH/USDT": 0.333,
-        "BNB/USDT": 0.334,
+        "ETH/USDT": 0.50,
+        "BNB/USDT": 0.50,
     }
 
     def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:

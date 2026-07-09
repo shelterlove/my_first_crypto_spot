@@ -17,6 +17,7 @@ class Action:
     price: float
     reason: str
     order_type: str = "market"
+    diagnostics: dict = field(default_factory=dict)
 
 
 @dataclass

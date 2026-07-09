@@ -131,16 +131,15 @@ def test_clamp_buy_delta_to_actual_gap() -> None:
 def test_pair_allocation_defaults_to_fixed_sleeves() -> None:
     strategy = CryptoSpotV26()
 
-    assert strategy._pair_allocation("BTC/USDT") == 0.333
-    assert strategy._pair_allocation("ETH/USDT") == 0.333
-    assert strategy._pair_allocation("BNB/USDT") == 0.334
+    assert strategy._pair_allocation("ETH/USDT") == 0.50
+    assert strategy._pair_allocation("BNB/USDT") == 0.50
     assert strategy._pair_allocation("SOL/USDT") == 1.0
 
 
 def test_pair_stake_uses_pair_allocation() -> None:
     strategy = CryptoSpotV26()
 
-    assert round(strategy._pair_stake_amount("BNB/USDT", 1000), 6) == 334.0
+    assert round(strategy._pair_stake_amount("BNB/USDT", 1000), 6) == 500.0
 
 
 def test_bootstrap_delta_uses_native_current_with_cap() -> None:
@@ -160,7 +159,7 @@ def test_bootstrap_custom_stake_uses_pair_sleeve() -> None:
     }))
 
     stake = strategy.custom_stake_amount(
-        pair="BTC/USDT",
+        pair="ETH/USDT",
         current_time=None,
         current_rate=100.0,
         proposed_stake=1000.0,
@@ -171,7 +170,7 @@ def test_bootstrap_custom_stake_uses_pair_sleeve() -> None:
         side="long",
     )
 
-    assert round(stake, 6) == 86.58
+    assert round(stake, 6) == 130.0
 
 
 def test_bootstrap_custom_stake_requires_bootstrap_tag() -> None:
@@ -184,7 +183,7 @@ def test_bootstrap_custom_stake_requires_bootstrap_tag() -> None:
     }))
 
     stake = strategy.custom_stake_amount(
-        pair="BTC/USDT",
+        pair="ETH/USDT",
         current_time=None,
         current_rate=100.0,
         proposed_stake=1000.0,
@@ -208,7 +207,7 @@ def test_bootstrap_custom_stake_does_not_buy_on_native_sell() -> None:
     }))
 
     stake = strategy.custom_stake_amount(
-        pair="BTC/USDT",
+        pair="ETH/USDT",
         current_time=None,
         current_rate=100.0,
         proposed_stake=1000.0,

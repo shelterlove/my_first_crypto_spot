@@ -62,10 +62,18 @@ def run_strategy_rolling(
         )
 
         full_action_log = result_df.attrs.get("action_log")
+        full_sleeve_events = result_df.attrs.get("sleeve_events")
+        full_sleeve_daily = result_df.attrs.get("sleeve_daily")
         result_df = result_df[result_df["timestamp"] >= ts_start].reset_index(drop=True)
         action_log = pd.DataFrame() if full_action_log is None else full_action_log
         if not action_log.empty:
             action_log = action_log[action_log["timestamp"] >= ts_start].reset_index(drop=True)
+        sleeve_events = pd.DataFrame() if full_sleeve_events is None else full_sleeve_events
+        if not sleeve_events.empty:
+            sleeve_events = sleeve_events[sleeve_events["timestamp"] >= ts_start].reset_index(drop=True)
+        sleeve_daily = pd.DataFrame() if full_sleeve_daily is None else full_sleeve_daily
+        if not sleeve_daily.empty:
+            sleeve_daily = sleeve_daily[sleeve_daily["timestamp"] >= ts_start].reset_index(drop=True)
         result_df.attrs["action_log"] = action_log
         result_df.attrs["execution_mode"] = execution_mode
 
@@ -84,6 +92,12 @@ def run_strategy_rolling(
             if not action_log.empty:
                 for row in action_log.to_dict("records"):
                     artifact_sink.setdefault("action_logs", []).append({**meta, **row})
+            if not sleeve_events.empty:
+                for row in sleeve_events.to_dict("records"):
+                    artifact_sink.setdefault("sleeve_events", []).append({**meta, **row})
+            if not sleeve_daily.empty:
+                for row in sleeve_daily.to_dict("records"):
+                    artifact_sink.setdefault("sleeve_daily", []).append({**meta, **row})
 
         perf = calculate_portfolio_performance(
             result_df,
