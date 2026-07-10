@@ -25,24 +25,22 @@ function render(data) {
   renderAlerts(data.alerts || []);
   renderSignals(data.latest_signal);
   renderPositions(data.latest_futures_report);
-  renderOrders(data.latest_futures_report, data.latest_spot_report);
+  renderOrders(data.latest_futures_report);
   renderReports(data);
 }
 
 function renderStatus(data) {
   const futures = data.latest_futures_report || {};
-  const spot = data.latest_spot_report || {};
   const signal = data.latest_signal || {};
   const risk = futures.risk || {};
   const items = [
     ["Futures Mode", futures.mode || "none", futures.path || "No futures report"],
-    ["Wallet USDT", money(futures.wallet_balance_usdt || spot.total_equity_usdt), "Latest reported equity"],
-    ["Orders", String((futures.order_count || 0) + (spot.order_count || 0)), "Latest planned orders"],
+    ["Wallet USDT", money(futures.wallet_balance_usdt), "Latest reported equity"],
+    ["Orders", String(futures.order_count || 0), "Latest planned futures orders"],
     ["Liq. Buffer", risk.min_liquidation_buffer_pct == null ? "n/a" : pct.format(Number(risk.min_liquidation_buffer_pct)), "Minimum futures buffer"],
     ["Target Gross Cap", futures.target_gross_cap || "n/a", `Exchange leverage ${futures.exchange_leverage || "n/a"}`],
     ["Signal Age", age(signal.mtime), signal.path || "No signal file"],
     ["Futures Age", age(futures.mtime), futures.path || "No futures report"],
-    ["Spot Age", age(spot.mtime), spot.path || "No spot report"],
   ];
   document.getElementById("statusGrid").innerHTML = items.map(([label, value, hint]) => `
     <div class="metric">
@@ -94,13 +92,10 @@ function renderPositions(report) {
   `).join("") : emptyRow(6, "No futures positions.");
 }
 
-function renderOrders(futures, spot) {
+function renderOrders(futures) {
   const rows = [];
   if (futures && Array.isArray(futures.orders)) {
     futures.orders.forEach(order => rows.push(["Futures", futures.mode, order]));
-  }
-  if (spot && Array.isArray(spot.orders)) {
-    spot.orders.forEach(order => rows.push(["Spot", spot.mode, order]));
   }
   document.getElementById("ordersBody").innerHTML = rows.length ? rows.map(([venue, mode, order]) => `
     <tr>
@@ -119,7 +114,6 @@ function renderOrders(futures, spot) {
 function renderReports(data) {
   const reports = []
     .concat((data.recent_futures_reports || []).map(report => ["Futures", report]))
-    .concat((data.recent_spot_reports || []).map(report => ["Spot", report]))
     .sort((a, b) => new Date(b[1].mtime || 0) - new Date(a[1].mtime || 0))
     .slice(0, 12);
   document.getElementById("reportList").innerHTML = reports.length ? reports.map(([venue, report]) => `

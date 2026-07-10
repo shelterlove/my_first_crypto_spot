@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sync Binance spot daily klines into the local candles table."""
+"""Sync Binance Vision daily klines into the local candles table."""
 
 from __future__ import annotations
 
@@ -18,10 +18,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from crypto_spot_v1.config import get_db_url  # noqa: E402
+from futures_v1.config import get_db_url  # noqa: E402
 
 
-BINANCE_VISION_MONTHLY = "https://data.binance.vision/data/spot/monthly/klines"
+BINANCE_VISION_MONTHLY = "https://data.binance.vision/data/futures/um/monthly/klines"
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeframe", default="1d")
     parser.add_argument("--start", default="2020-01-01")
     parser.add_argument("--end", default=None, help="Inclusive end date. Defaults to current UTC month.")
-    parser.add_argument("--exchange", default="binance")
+    parser.add_argument("--exchange", default="binance_um_futures")
     return parser.parse_args()
 
 
@@ -111,7 +111,9 @@ def load_binance_vision_monthly(
     if not rows:
         return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
     out = pd.concat(rows, ignore_index=True)
-    open_time = pd.to_numeric(out["open_time"], errors="raise")
+    open_time = pd.to_numeric(out["open_time"], errors="coerce")
+    out = out[open_time.notna()].copy()
+    open_time = open_time[open_time.notna()]
     open_time_ms = open_time.where(open_time < 1e14, open_time / 1000.0)
     out["timestamp"] = pd.to_datetime(open_time_ms, unit="ms", utc=True)
     out = out[(out["timestamp"] >= start) & (out["timestamp"] <= end)].copy()

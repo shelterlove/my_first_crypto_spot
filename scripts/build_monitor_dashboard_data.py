@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build static monitor data for the V4.8 deployment dashboard."""
+"""Build static monitor data for the Official V1 deployment dashboard."""
 
 from __future__ import annotations
 
@@ -34,21 +34,17 @@ def main() -> None:
 
 def build_payload(*, results_dir: Path, recent_limit: int) -> dict[str, Any]:
     latest_signal = latest_signal_payload(results_dir)
-    futures_reports = report_payloads(results_dir / "binance_futures_testnet_v48", recent_limit)
-    spot_reports = report_payloads(results_dir / "binance_testnet_v48", recent_limit)
+    futures_reports = report_payloads(results_dir / "binance_futures_testnet", recent_limit)
     latest_futures = futures_reports[0] if futures_reports else None
-    latest_spot = spot_reports[0] if spot_reports else None
-    alerts = build_alerts(latest_signal=latest_signal, latest_futures=latest_futures, latest_spot=latest_spot)
+    alerts = build_alerts(latest_signal=latest_signal, latest_futures=latest_futures)
     return {
         "generated_at": pd.Timestamp.now("UTC").isoformat(),
-        "strategy": "v4_8_eth_bnb",
+        "strategy": "eth_bnb_futures_v1",
         "symbols": ["ETH/USDT", "BNB/USDT"],
         "alerts": alerts,
         "latest_signal": latest_signal,
         "latest_futures_report": latest_futures,
-        "latest_spot_report": latest_spot,
         "recent_futures_reports": futures_reports,
-        "recent_spot_reports": spot_reports,
     }
 
 
@@ -90,9 +86,11 @@ def normalize_report(path: Path, data: dict[str, Any]) -> dict[str, Any]:
         "base_url": data.get("base_url"),
         "strategy": data.get("strategy"),
         "wallet_balance_usdt": data.get("wallet_balance_usdt"),
+        "account_equity_usdt": data.get("account_equity_usdt"),
         "total_equity_usdt": data.get("total_equity_usdt"),
         "deploy_equity_usdt": data.get("deploy_equity_usdt"),
         "sleeve_value_usdt": data.get("sleeve_value_usdt"),
+        "symbol_sleeves": data.get("symbol_sleeves", {}),
         "exchange_leverage": data.get("exchange_leverage"),
         "target_gross_cap": data.get("target_gross_cap"),
         "orders": orders,
@@ -138,7 +136,6 @@ def build_alerts(
     *,
     latest_signal: dict[str, Any] | None,
     latest_futures: dict[str, Any] | None,
-    latest_spot: dict[str, Any] | None,
 ) -> list[dict[str, str]]:
     alerts = []
     now = pd.Timestamp.now("UTC")
@@ -149,20 +146,19 @@ def build_alerts(
         if signal_age is not None and signal_age > 36:
             alerts.append({"level": "warn", "message": f"Latest signal is stale: {signal_age:.1f} hours old."})
 
-    if latest_futures is None and latest_spot is None:
+    if latest_futures is None:
         alerts.append({"level": "warn", "message": "No executor report found."})
-    for label, report in (("Futures", latest_futures), ("Spot", latest_spot)):
-        if report is None:
-            continue
-        report_age = age_hours(report.get("mtime"), now)
-        if report_age is not None and report_age > 36:
-            alerts.append({"level": "warn", "message": f"{label} report is stale: {report_age:.1f} hours old."})
-        risk = report.get("risk") if isinstance(report.get("risk"), dict) else {}
-        min_buffer = risk.get("min_liquidation_buffer_pct")
-        if min_buffer is not None and float(min_buffer) < 0.20:
-            alerts.append({"level": "danger", "message": f"{label} liquidation buffer below 20%."})
-        if risk.get("clipped_order_count", 0):
-            alerts.append({"level": "info", "message": f"{label} has clipped orders. Check clip_reason."})
+        return alerts
+
+    report_age = age_hours(latest_futures.get("mtime"), now)
+    if report_age is not None and report_age > 36:
+        alerts.append({"level": "warn", "message": f"Futures report is stale: {report_age:.1f} hours old."})
+    risk = latest_futures.get("risk") if isinstance(latest_futures.get("risk"), dict) else {}
+    min_buffer = risk.get("min_liquidation_buffer_pct")
+    if min_buffer is not None and float(min_buffer) < 0.20:
+        alerts.append({"level": "danger", "message": "Futures liquidation buffer below 20%."})
+    if risk.get("clipped_order_count", 0):
+        alerts.append({"level": "info", "message": "Futures has clipped orders. Check clip_reason."})
     return alerts
 
 

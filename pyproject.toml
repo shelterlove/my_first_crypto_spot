@@ -1,7 +1,7 @@
 [project]
-name = "crypto-spot-v1"
-version = "0.1.0"
-description = "Native V4.8 ETH/BNB crypto strategy research and Binance testnet deployment."
+name = "futures-v1"
+version = "1.0.0"
+description = "Official ETH/BNB futures strategy for Binance USD-M Futures Testnet."
 requires-python = ">=3.10"
 dependencies = [
   "numpy",
@@ -9,11 +9,12 @@ dependencies = [
   "sqlalchemy",
   "psycopg2-binary",
   "python-dotenv",
+  "requests",
 ]
 
 [project.optional-dependencies]
-freqtrade = [
-  "freqtrade",
+dev = [
+  "pytest",
 ]
 
 [tool.pytest.ini_options]

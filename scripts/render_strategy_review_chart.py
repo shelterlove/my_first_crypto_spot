@@ -19,11 +19,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from crypto_spot_v1.backtest_event_driven import run_rebalance_backtest  # noqa: E402
-from crypto_spot_v1.benchmark import V1BenchmarkRunner, build_strategy  # noqa: E402
+from futures_v1.backtest_event_driven import run_rebalance_backtest  # noqa: E402
+from futures_v1.benchmark import V1BenchmarkRunner, build_strategy  # noqa: E402
 
 
-SYMBOL_ORDER = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
+SYMBOL_ORDER = ["ETH/USDT", "BNB/USDT"]
 COLORS = {
     "BTC/USDT": "#f59e0b",
     "ETH/USDT": "#2563eb",
@@ -35,17 +35,17 @@ FALLBACK_COLORS = ["#7c3aed", "#dc2626", "#0891b2", "#9333ea", "#16a34a", "#ea58
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--strategy", default="v3_17E")
-    parser.add_argument("--start", default="2019-01-01")
-    parser.add_argument("--end", default="2026-05-22")
+    parser.add_argument("--strategy", default="eth_bnb_futures_v1")
+    parser.add_argument("--start", default="2020-01-01")
+    parser.add_argument("--end", default="2026-05-18")
     parser.add_argument(
         "--symbols",
         default=",".join(SYMBOL_ORDER),
-        help="Comma-separated symbols to review, e.g. SOL/USDT or BTC/USDT,ETH/USDT,BNB/USDT.",
+        help="Comma-separated traded symbols to review. BTC/USDT is loaded automatically as a reference.",
     )
     parser.add_argument(
         "--output-dir",
-        default=str(PROJECT_ROOT / "results" / "strategy_review" / "v3_17E_full_20190101_20260522"),
+        default=str(PROJECT_ROOT / "results" / "strategy_review" / "official_v1_full_20200101_20260518"),
     )
     return parser.parse_args()
 
@@ -148,7 +148,7 @@ def _load_binance_vision_daily(symbol: str, start_ts: pd.Timestamp, end_ts: pd.T
     ]
     for month in months:
         url = (
-            "https://data.binance.vision/data/spot/monthly/klines/"
+            "https://data.binance.vision/data/futures/um/monthly/klines/"
             f"{binance_symbol}/1d/{binance_symbol}-1d-{month}.zip"
         )
         response = requests.get(url, timeout=30)
@@ -163,6 +163,8 @@ def _load_binance_vision_daily(symbol: str, start_ts: pd.Timestamp, end_ts: pd.T
         raise ValueError(f"No Binance Vision candles loaded for {symbol} 1d.")
     out = pd.concat(rows, ignore_index=True)
     open_time = pd.to_numeric(out["open_time"], errors="coerce")
+    out = out[open_time.notna()].copy()
+    open_time = open_time[open_time.notna()]
     open_time_ms = np.where(open_time > 1e14, open_time / 1000.0, open_time)
     out["timestamp"] = pd.to_datetime(open_time_ms, unit="ms", utc=True)
     out = out[["timestamp", "open", "high", "low", "close", "volume"]].copy()
@@ -170,7 +172,7 @@ def _load_binance_vision_daily(symbol: str, start_ts: pd.Timestamp, end_ts: pd.T
         out[col] = pd.to_numeric(out[col], errors="raise")
     out.insert(0, "timeframe", "1d")
     out.insert(0, "symbol", symbol)
-    out.insert(0, "exchange", "binance")
+    out.insert(0, "exchange", "binance_um_futures")
     return out.sort_values("timestamp").reset_index(drop=True)
 
 
@@ -397,27 +399,27 @@ def run_full_window(
     prices = pd.concat(price_rows, ignore_index=True)
     composite = build_composite(equity, prices)
     diagnostics = pd.DataFrame(diagnostics_rows)
-    defense_episodes = pd.concat(episode_rows, ignore_index=True) if episode_rows else pd.DataFrame()
-    risk_cycles = pd.concat(risk_cycle_rows, ignore_index=True) if risk_cycle_rows else pd.DataFrame()
-    sleeve_events = pd.concat(sleeve_event_rows, ignore_index=True) if sleeve_event_rows else pd.DataFrame()
-    sleeve_daily = pd.concat(sleeve_daily_rows, ignore_index=True) if sleeve_daily_rows else pd.DataFrame()
-    base_lot_events = pd.concat(base_lot_event_rows, ignore_index=True) if base_lot_event_rows else pd.DataFrame()
-    base_deferred = pd.concat(base_deferred_rows, ignore_index=True) if base_deferred_rows else pd.DataFrame()
-    decision_trace = pd.concat(decision_trace_rows, ignore_index=True) if decision_trace_rows else pd.DataFrame()
-    candidate_orders = pd.concat(candidate_order_rows, ignore_index=True) if candidate_order_rows else pd.DataFrame()
-    risk_assessment = pd.concat(risk_assessment_rows, ignore_index=True) if risk_assessment_rows else pd.DataFrame()
-    intent_plan = pd.concat(intent_plan_rows, ignore_index=True) if intent_plan_rows else pd.DataFrame()
-    target_vector = pd.concat(target_vector_rows, ignore_index=True) if target_vector_rows else pd.DataFrame()
-    budget_ledger = pd.concat(budget_ledger_rows, ignore_index=True) if budget_ledger_rows else pd.DataFrame()
-    order_arbiter = pd.concat(order_arbiter_rows, ignore_index=True) if order_arbiter_rows else pd.DataFrame()
-    symbol_policy = pd.concat(symbol_policy_rows, ignore_index=True) if symbol_policy_rows else pd.DataFrame()
-    recovery_state = pd.concat(recovery_state_rows, ignore_index=True) if recovery_state_rows else pd.DataFrame()
-    lifecycle_state = pd.concat(lifecycle_state_rows, ignore_index=True) if lifecycle_state_rows else pd.DataFrame()
-    recovery_credit = pd.concat(recovery_credit_rows, ignore_index=True) if recovery_credit_rows else pd.DataFrame()
-    recovery_credit_checks = pd.concat(recovery_credit_check_rows, ignore_index=True) if recovery_credit_check_rows else pd.DataFrame()
-    protected_recovery = pd.concat(protected_recovery_rows, ignore_index=True) if protected_recovery_rows else pd.DataFrame()
-    outer_overlay = pd.concat(outer_overlay_rows, ignore_index=True) if outer_overlay_rows else pd.DataFrame()
-    execution_transform_audit = pd.concat(execution_transform_audit_rows, ignore_index=True) if execution_transform_audit_rows else pd.DataFrame()
+    defense_episodes = _concat_frames(episode_rows)
+    risk_cycles = _concat_frames(risk_cycle_rows)
+    sleeve_events = _concat_frames(sleeve_event_rows)
+    sleeve_daily = _concat_frames(sleeve_daily_rows)
+    base_lot_events = _concat_frames(base_lot_event_rows)
+    base_deferred = _concat_frames(base_deferred_rows)
+    decision_trace = _concat_frames(decision_trace_rows)
+    candidate_orders = _concat_frames(candidate_order_rows)
+    risk_assessment = _concat_frames(risk_assessment_rows)
+    intent_plan = _concat_frames(intent_plan_rows)
+    target_vector = _concat_frames(target_vector_rows)
+    budget_ledger = _concat_frames(budget_ledger_rows)
+    order_arbiter = _concat_frames(order_arbiter_rows)
+    symbol_policy = _concat_frames(symbol_policy_rows)
+    recovery_state = _concat_frames(recovery_state_rows)
+    lifecycle_state = _concat_frames(lifecycle_state_rows)
+    recovery_credit = _concat_frames(recovery_credit_rows)
+    recovery_credit_checks = _concat_frames(recovery_credit_check_rows)
+    protected_recovery = _concat_frames(protected_recovery_rows)
+    outer_overlay = _concat_frames(outer_overlay_rows)
+    execution_transform_audit = _concat_frames(execution_transform_audit_rows)
     defense_sell_quality = build_defense_sell_quality(actions, prices)
     return {
         "equity": equity,
@@ -787,6 +789,17 @@ def _filter_timestamp_start(frame: pd.DataFrame, start_ts: pd.Timestamp) -> pd.D
     return out[out["timestamp"] >= start_ts].reset_index(drop=True)
 
 
+def _concat_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    cleaned = [
+        frame.dropna(axis=1, how="all")
+        for frame in frames
+        if frame is not None and not frame.empty
+    ]
+    if not cleaned:
+        return pd.DataFrame()
+    return pd.concat(cleaned, ignore_index=True)
+
+
 def _polyline(xs: np.ndarray, ys: np.ndarray, color: str, width: float, *, dash: bool = False) -> str:
     points = " ".join(
         f"{float(x):.1f},{float(y):.1f}"
@@ -995,553 +1008,35 @@ def _setup_count_metrics(actions: pd.DataFrame) -> dict[str, int]:
 
 
 def _v4_guard_metrics(actions: pd.DataFrame, diagnostics: pd.DataFrame | None = None) -> dict[str, int]:
-    tags = [
-        "v4_0A_target_band_widened",
-        "v4_0A_target_smoothed",
-        "v4_0A_reverse_cooldown_buy",
-        "v4_0A_reverse_cooldown_sell",
-        "v4_0A_range_no_trade",
-        "v4_0A_protective_override",
-        "v4_0B_target_band_widened",
-        "v4_0B_target_smoothed",
-        "v4_0B_range_band_active",
-        "v4_0B_soft_risk_reduce",
-        "v4_0B_hard_protective_sell",
-        "v4_0C_range_band_active",
-        "v4_0C_soft_risk_reduce",
-        "v4_0C_hard_protective_sell",
-        "v4_0C_intent_bull_high",
-        "v4_0C_intent_bull_normal",
-        "v4_0C_intent_bull_repair",
-        "v4_0C_intent_repair",
-        "v4_0C_intent_range_churn",
-        "v4_0C_intent_mixed_low_trend",
-        "v4_0C_intent_hard_protect",
-        "v4_0D_target_band_widened",
-        "v4_0D_target_smoothed",
-        "v4_0D_range_band_active",
-        "v4_0D_soft_risk_reduce",
-        "v4_0D_hard_protective_sell",
-        "v4_0D_late_bull_cap",
-        "v4_0D_late_bull_rebalance",
-        "v4_0D_late_bull_direct_rebalance",
-        "v4_0D_repair_staged_refill",
-        "v4_0E_target_band_widened",
-        "v4_0E_target_smoothed",
-        "v4_0E_range_band_active",
-        "v4_0E_soft_risk_reduce",
-        "v4_0E_hard_protective_sell",
-        "v4_0E_value_recovery_buy",
-        "v4_0E_platform_buy_limited",
-        "v4_0E_high_rank_buy_limited",
-        "v4_0E_rebalance_buy_limited",
-        "v4_0E_platform_sell_blocked",
-        "v4_0E_overheat_sell",
-        "v4_0F_target_band_widened",
-        "v4_0F_target_smoothed",
-        "v4_0F_range_band_active",
-        "v4_0F_soft_risk_reduce",
-        "v4_0F_hard_protective_sell",
-        "v4_0F_value_recovery_buy",
-        "v4_0F_platform_buy_limited",
-        "v4_0F_high_rank_buy_limited",
-        "v4_0F_rebalance_buy_limited",
-        "v4_0F_overheat_sell",
-        "v4_0F_high_rank_buy_vetoed",
-        "v4_0F_platform_buy_vetoed",
-        "v4_0G_target_band_widened",
-        "v4_0G_target_smoothed",
-        "v4_0G_range_band_active",
-        "v4_0G_soft_risk_reduce",
-        "v4_0G_hard_protective_sell",
-        "v4_0G_value_recovery_buy",
-        "v4_0G_platform_buy_limited",
-        "v4_0G_high_rank_buy_limited",
-        "v4_0G_rebalance_buy_limited",
-        "v4_0G_overheat_sell",
-        "v4_0G_high_rank_buy_vetoed",
-        "v4_0G_platform_buy_vetoed",
-        "v4_0G_intent_accumulate",
-        "v4_0G_intent_hold",
-        "v4_0G_intent_idle",
-        "v4_0G_intent_distribute",
-        "v4_0G_intent_defend",
-        "v4_0G_safe_recovery_staged",
-        "v4_0G_soft_risk_deferred",
-        "v4_0H_target_band_widened",
-        "v4_0H_target_smoothed",
-        "v4_0H_range_band_active",
-        "v4_0H_hard_protective_sell",
-        "v4_0H_value_recovery_buy",
-        "v4_0H_platform_buy_limited",
-        "v4_0H_high_rank_buy_limited",
-        "v4_0H_rebalance_buy_limited",
-        "v4_0H_overheat_sell",
-        "v4_0H_high_rank_buy_vetoed",
-        "v4_0H_platform_buy_vetoed",
-        "v4_0H_intent_accumulate",
-        "v4_0H_intent_hold",
-        "v4_0H_intent_idle",
-        "v4_0H_intent_distribute",
-        "v4_0H_intent_defend",
-        "v4_0H_intent_soft_defense",
-        "v4_0H_safe_recovery_staged",
-        "v4_0H_soft_risk_episode_sell",
-        "v4_0I_cycle_trim",
-        "v4_0J_cycle_trim",
-        "v4_0K_cycle_trim",
-        "v4_0K_idle_recovery_starter",
-        "v4_0L_cycle_trim",
-        "v4_0L_idle_recovery_starter",
-        "v4_0M_cycle_trim",
-        "v4_0M_idle_recovery_starter",
-        "v4_0N_cycle_trim",
-        "v4_0N_idle_recovery_starter",
-        "v4_0O_cycle_trim",
-        "v4_0O_idle_recovery_starter",
-        "v4_0O_soft_hedge_buyback",
-        "v4_0P_cycle_trim",
-        "v4_0P_idle_recovery_starter",
-        "v4_0P_soft_hedge_buyback",
-        "v4_0Q_cycle_trim",
-        "v4_0Q_idle_recovery_starter",
-        "v4_0Q_soft_hedge_buyback",
-        "v4_0R_cycle_trim",
-        "v4_0R_idle_recovery_starter",
-        "v4_0S_cycle_trim",
-        "v4_0S_idle_recovery_starter",
-        "v4_0T_cycle_trim",
-        "v4_0T_idle_recovery_starter",
-        "v4_0U_cycle_trim",
-        "v4_0U_idle_recovery_starter",
-        "v4_0V_cycle_trim",
-        "v4_0V_idle_recovery_starter",
-        "v4_0W_cycle_trim",
-        "v4_0W_idle_recovery_starter",
-        "v4_0X_cycle_trim",
-        "v4_0X_idle_recovery_starter",
-        "v4_0Y_cycle_trim",
-        "v4_0Y_idle_recovery_starter",
-        "v4_0Z_cycle_trim",
-        "v4_0Z_idle_recovery_starter",
-        "v4_0AA_cycle_trim",
-        "v4_0AA_idle_recovery_starter",
-        "v4_0AA_defense_reclaim_buy",
-        "v4_0AB_cycle_trim",
-        "v4_0AB_idle_recovery_starter",
-        "v4_0AB_recovery_test_safe_recovery_staged",
-        "v4_0AC_cycle_trim",
-        "v4_0AC_idle_recovery_starter",
-        "v4_0AC_safe_recovery_confirm_allowed",
-        "v4_0AC_safe_recovery_probe_staged",
-        "v4_0AC_target_gap_false_recovery_staged",
-        "v4_0AC_target_reduce_distribution_allowed",
-        "v4_0AC_defense_reclaim_probe",
-        "v4_0AD_cycle_trim",
-        "v4_0AD_idle_recovery_starter",
-        "v4_0AD_toxic_safe_recovery_staged",
-        "v4_0AD_false_recovery_target_gap_staged",
-        "v4_0AE_cycle_trim",
-        "v4_0AE_idle_recovery_starter",
-        "v4_0AE_false_recovery_target_gap_staged",
-        "v4_0AF_cycle_trim",
-        "v4_0AF_idle_recovery_starter",
-        "v4_0AF_position_buy_sized",
-        "v4_0AF_position_sell_sized",
-        "v4_0AF_target_gap_value_intent",
-        "v4_0AF_target_gap_bull_intent",
-        "v4_0AF_target_gap_starter_intent",
-        "v4_0AF_target_reduce_distribution_intent",
-        "v4_0AG_cycle_trim",
-        "v4_0AG_idle_recovery_starter",
-        "v4_0AG_soft_defense_target_reduce",
-        "v4_0AG_distribution_target_reduce",
-        "v4_0AH_cycle_trim",
-        "v4_0AH_idle_recovery_starter",
-        "v4_0AH_soft_defense_target_reduce",
-        "v4_0AH_distribution_target_reduce",
-        "v4_0AI_cycle_trim",
-        "v4_0AI_idle_recovery_starter",
-        "v4_0AI_soft_defense_target_reduce",
-        "v4_0AI_distribution_target_reduce",
-        "v4_0AI_starter_buy",
-        "v4_0AI_repair_add",
-        "v4_0AI_trend_add",
-        "v4_0AI_opportunity_add",
-        "v4_0AI_soft_defense_sell",
-        "v4_0AI_distribution_sell",
-        "v4_0AJ_cycle_trim",
-        "v4_0AJ_idle_recovery_starter",
-        "v4_0AJ_soft_defense_target_reduce",
-        "v4_0AJ_distribution_target_reduce",
-        "v4_0AJ_starter_buy",
-        "v4_0AJ_repair_add",
-        "v4_0AJ_trend_add",
-        "v4_0AJ_opportunity_add",
-        "v4_0AJ_soft_defense_sell",
-        "v4_0AJ_distribution_sell",
-        "v4_0AJ_ambiguous_repair_soft_defense_sized",
-        "v4_0AK_cycle_trim",
-        "v4_0AK_idle_recovery_starter",
-        "v4_0AK_soft_defense_target_reduce",
-        "v4_0AK_distribution_target_reduce",
-        "v4_0AK_starter_buy",
-        "v4_0AK_repair_add",
-        "v4_0AK_trend_add",
-        "v4_0AK_opportunity_add",
-        "v4_0AK_soft_defense_sell",
-        "v4_0AK_distribution_sell",
-        "v4_0AK_defense_release_buy",
-        "v4_0AL_cycle_trim",
-        "v4_0AL_idle_recovery_starter",
-        "v4_0AL_soft_defense_target_reduce",
-        "v4_0AL_distribution_target_reduce",
-        "v4_0AL_starter_buy",
-        "v4_0AL_repair_add",
-        "v4_0AL_trend_add",
-        "v4_0AL_opportunity_add",
-        "v4_0AL_soft_defense_sell",
-        "v4_0AL_distribution_sell",
-        "v4_0AL_defense_release_buy",
-        "v4_0AM_cycle_trim",
-        "v4_0AM_idle_recovery_starter",
-        "v4_0AM_soft_defense_target_reduce",
-        "v4_0AM_distribution_target_reduce",
-        "v4_0AM_starter_buy",
-        "v4_0AM_value_recovery",
-        "v4_0AM_trend_cont",
-        "v4_0AM_opportunity_add",
-        "v4_0AM_soft_defense_sell",
-        "v4_0AM_distribution_sell",
-        "v4_0AM_defense_release_stage1_buy",
-        "v4_0AM_defense_release_stage2_buy",
-        "v4_0AN_soft_defense_sell",
-        "v4_0AN_distribution_sell",
-        "v4_0AN_defense_release_buy",
-        "v4_0AN_quality_weak",
-        "v4_0AN_quality_normal",
-        "v4_0AN_quality_high",
-        "v4_0AO_safe_recovery_toxic_probe",
-        "v4_0AO_safe_recovery_high_location_capped",
-        "v4_0AO_trend_cont_hot_location_capped",
-        "v4_0AO_starter_bear_rally_risk",
-        "v4_0AO_hard_low_quiet_candidate",
-    ]
-    diag_keys = [
-        "v4_0B_range_band_active_count",
-        "v4_0B_range_trade_blocked_count",
-        "v4_0B_reverse_buy_blocked_count",
-        "v4_0B_reverse_sell_blocked_count",
-        "v4_0C_range_band_active_count",
-        "v4_0C_range_trade_blocked_count",
-        "v4_0C_reverse_buy_blocked_count",
-        "v4_0C_reverse_sell_blocked_count",
-        "v4_0D_range_band_active_count",
-        "v4_0D_range_trade_blocked_count",
-        "v4_0D_reverse_buy_blocked_count",
-        "v4_0D_reverse_sell_blocked_count",
-        "v4_0E_range_band_active_count",
-        "v4_0E_range_trade_blocked_count",
-        "v4_0E_reverse_buy_blocked_count",
-        "v4_0E_reverse_sell_blocked_count",
-        "v4_0F_range_band_active_count",
-        "v4_0F_range_trade_blocked_count",
-        "v4_0F_reverse_buy_blocked_count",
-        "v4_0F_reverse_sell_blocked_count",
-        "v4_0F_high_rank_buy_vetoed_count",
-        "v4_0F_platform_buy_vetoed_count",
-        "v4_0G_range_band_active_count",
-        "v4_0G_range_trade_blocked_count",
-        "v4_0G_reverse_buy_blocked_count",
-        "v4_0G_reverse_sell_blocked_count",
-        "v4_0G_high_rank_buy_vetoed_count",
-        "v4_0G_platform_buy_vetoed_count",
-        "v4_0G_intent_accumulate_count",
-        "v4_0G_intent_hold_count",
-        "v4_0G_intent_idle_count",
-        "v4_0G_intent_distribute_count",
-        "v4_0G_intent_defend_count",
-        "v4_0G_target_reduce_blocked_count",
-        "v4_0G_idle_buy_blocked_count",
-        "v4_0G_safe_recovery_staged_count",
-        "v4_0G_recovery_lock_sell_blocked_count",
-        "v4_0G_defense_lock_buy_blocked_count",
-        "v4_0G_soft_risk_deferred_count",
-        "v4_0H_range_band_active_count",
-        "v4_0H_range_trade_blocked_count",
-        "v4_0H_reverse_buy_blocked_count",
-        "v4_0H_reverse_sell_blocked_count",
-        "v4_0H_high_rank_buy_vetoed_count",
-        "v4_0H_platform_buy_vetoed_count",
-        "v4_0H_intent_accumulate_count",
-        "v4_0H_intent_hold_count",
-        "v4_0H_intent_idle_count",
-        "v4_0H_intent_distribute_count",
-        "v4_0H_intent_defend_count",
-        "v4_0H_intent_soft_defense_count",
-        "v4_0H_target_reduce_blocked_count",
-        "v4_0H_idle_buy_blocked_count",
-        "v4_0H_safe_recovery_staged_count",
-        "v4_0H_recovery_lock_sell_blocked_count",
-        "v4_0H_defense_lock_buy_blocked_count",
-        "v4_0H_soft_risk_blocked_count",
-        "v4_0H_soft_risk_cooldown_blocked_count",
-        "v4_0H_soft_risk_episode_sell_count",
-        "v4_0I_cycle_trim_allowed_count",
-        "v4_0I_cycle_trim_cooldown_blocked_count",
-        "v4_0I_target_reduce_blocked_count",
-        "v4_0J_cycle_trim_allowed_count",
-        "v4_0J_cycle_trim_cooldown_blocked_count",
-        "v4_0J_target_reduce_blocked_count",
-        "v4_0K_cycle_trim_allowed_count",
-        "v4_0K_cycle_trim_cooldown_blocked_count",
-        "v4_0K_target_reduce_blocked_count",
-        "v4_0K_idle_starter_buy_allowed_count",
-        "v4_0K_idle_buy_blocked_count",
-        "v4_0K_idle_starter_cooldown_blocked_count",
-        "v4_0L_cycle_trim_allowed_count",
-        "v4_0L_cycle_trim_cooldown_blocked_count",
-        "v4_0L_target_reduce_blocked_count",
-        "v4_0M_cycle_trim_allowed_count",
-        "v4_0M_cycle_trim_cooldown_blocked_count",
-        "v4_0M_target_reduce_blocked_count",
-        "v4_0N_cycle_trim_allowed_count",
-        "v4_0N_cycle_trim_cooldown_blocked_count",
-        "v4_0N_target_reduce_blocked_count",
-        "v4_0O_cycle_trim_allowed_count",
-        "v4_0O_cycle_trim_cooldown_blocked_count",
-        "v4_0O_target_reduce_blocked_count",
-        "v4_0O_soft_hedge_buyback_count",
-        "v4_0O_soft_hedge_buyback_blocked_count",
-        "v4_0P_cycle_trim_allowed_count",
-        "v4_0P_cycle_trim_cooldown_blocked_count",
-        "v4_0P_target_reduce_blocked_count",
-        "v4_0Q_cycle_trim_allowed_count",
-        "v4_0Q_cycle_trim_cooldown_blocked_count",
-        "v4_0Q_target_reduce_blocked_count",
-        "v4_0R_cycle_trim_allowed_count",
-        "v4_0R_cycle_trim_cooldown_blocked_count",
-        "v4_0R_target_reduce_blocked_count",
-        "v4_0R_soft_risk_pending_started_count",
-        "v4_0R_soft_risk_pending_confirmed_count",
-        "v4_0R_soft_risk_pending_invalidated_count",
-        "v4_0R_soft_risk_pending_expired_count",
-        "v4_0R_soft_risk_pending_blocked_count",
-        "v4_0S_cycle_trim_allowed_count",
-        "v4_0S_cycle_trim_cooldown_blocked_count",
-        "v4_0S_target_reduce_blocked_count",
-        "v4_0T_cycle_trim_allowed_count",
-        "v4_0T_cycle_trim_cooldown_blocked_count",
-        "v4_0T_target_reduce_blocked_count",
-        "v4_0T_target_reduce_conflict_blocked_count",
-        "v4_0U_cycle_trim_allowed_count",
-        "v4_0U_cycle_trim_cooldown_blocked_count",
-        "v4_0U_target_reduce_blocked_count",
-        "v4_0U_bear_repair_reduce_watch_blocked_count",
-        "v4_0V_cycle_trim_allowed_count",
-        "v4_0V_cycle_trim_cooldown_blocked_count",
-        "v4_0V_target_reduce_blocked_count",
-        "v4_0V_pending_target_reduce_started_count",
-        "v4_0V_pending_target_reduce_confirmed_count",
-        "v4_0V_pending_target_reduce_invalidated_count",
-        "v4_0V_pending_target_reduce_expired_count",
-        "v4_0V_pending_recovery_buy_started_count",
-        "v4_0V_pending_recovery_buy_confirmed_count",
-        "v4_0V_pending_recovery_buy_invalidated_count",
-        "v4_0V_pending_recovery_buy_expired_count",
-        "v4_0W_cycle_trim_allowed_count",
-        "v4_0W_cycle_trim_cooldown_blocked_count",
-        "v4_0W_target_reduce_blocked_count",
-        "v4_0X_cycle_trim_allowed_count",
-        "v4_0X_cycle_trim_cooldown_blocked_count",
-        "v4_0X_target_reduce_blocked_count",
-        "v4_0Y_cycle_trim_allowed_count",
-        "v4_0Y_cycle_trim_cooldown_blocked_count",
-        "v4_0Y_target_reduce_blocked_count",
-        "v4_0Z_cycle_trim_allowed_count",
-        "v4_0Z_cycle_trim_cooldown_blocked_count",
-        "v4_0Z_target_reduce_blocked_count",
-        "v4_0Z_non_bull_safe_recovery_blocked_count",
-        "v4_0AA_cycle_trim_allowed_count",
-        "v4_0AA_cycle_trim_cooldown_blocked_count",
-        "v4_0AA_target_reduce_blocked_count",
-        "v4_0AA_defense_reclaim_buy_count",
-        "v4_0AA_defense_reclaim_blocked_count",
-        "v4_0AB_cycle_trim_allowed_count",
-        "v4_0AB_cycle_trim_cooldown_blocked_count",
-        "v4_0AB_target_reduce_blocked_count",
-        "v4_0AB_recovery_test_safe_recovery_staged_count",
-        "v4_0AC_cycle_trim_allowed_count",
-        "v4_0AC_cycle_trim_cooldown_blocked_count",
-        "v4_0AC_target_reduce_blocked_count",
-        "v4_0AC_safe_recovery_confirm_allowed_count",
-        "v4_0AC_safe_recovery_staged_count",
-        "v4_0AC_target_gap_false_recovery_staged_count",
-        "v4_0AC_target_reduce_distribution_allowed_count",
-        "v4_0AC_target_reduce_rebalance_pended_count",
-        "v4_0AC_reclaim_watch_started_count",
-        "v4_0AC_reclaim_buy_count",
-        "v4_0AC_reclaim_watch_expired_count",
-        "v4_0AD_cycle_trim_allowed_count",
-        "v4_0AD_cycle_trim_cooldown_blocked_count",
-        "v4_0AD_target_reduce_blocked_count",
-        "v4_0AD_toxic_safe_recovery_staged_count",
-        "v4_0AD_false_recovery_target_gap_staged_count",
-        "v4_0AE_cycle_trim_allowed_count",
-        "v4_0AE_cycle_trim_cooldown_blocked_count",
-        "v4_0AE_target_reduce_blocked_count",
-        "v4_0AE_toxic_safe_recovery_blocked_count",
-        "v4_0AE_false_recovery_target_gap_staged_count",
-        "v4_0AF_cycle_trim_allowed_count",
-        "v4_0AF_cycle_trim_cooldown_blocked_count",
-        "v4_0AF_target_reduce_blocked_count",
-        "v4_0AF_position_buy_blocked_count",
-        "v4_0AF_position_sell_blocked_count",
-        "v4_0AF_position_buy_sized_count",
-        "v4_0AF_position_sell_sized_count",
-        "v4_0AF_target_gap_value_intent_count",
-        "v4_0AF_target_gap_bull_intent_count",
-        "v4_0AF_target_gap_starter_intent_count",
-        "v4_0AF_target_reduce_distribution_intent_count",
-        "v4_0AG_cycle_trim_allowed_count",
-        "v4_0AG_cycle_trim_cooldown_blocked_count",
-        "v4_0AG_target_reduce_blocked_count",
-        "v4_0AG_accumulate_target_reduce_blocked_count",
-        "v4_0AG_soft_defense_target_reduce_allowed_count",
-        "v4_0AG_distribution_target_reduce_allowed_count",
-        "v4_0AH_cycle_trim_allowed_count",
-        "v4_0AH_cycle_trim_cooldown_blocked_count",
-        "v4_0AH_target_reduce_blocked_count",
-        "v4_0AH_accumulate_target_reduce_blocked_count",
-        "v4_0AH_soft_defense_target_reduce_allowed_count",
-        "v4_0AH_distribution_target_reduce_allowed_count",
-        "v4_0AH_low_repair_target_reduce_blocked_count",
-        "v4_0AI_cycle_trim_allowed_count",
-        "v4_0AI_cycle_trim_cooldown_blocked_count",
-        "v4_0AI_target_reduce_blocked_count",
-        "v4_0AI_accumulate_target_reduce_blocked_count",
-        "v4_0AI_soft_defense_target_reduce_allowed_count",
-        "v4_0AI_distribution_target_reduce_allowed_count",
-        "v4_0AI_low_repair_target_reduce_blocked_count",
-        "v4_0AI_target_gap_relabelled_count",
-        "v4_0AI_target_reduce_relabelled_count",
-        "v4_0AI_starter_buy_count",
-        "v4_0AI_repair_add_count",
-        "v4_0AI_trend_add_count",
-        "v4_0AI_opportunity_add_count",
-        "v4_0AI_soft_defense_sell_count",
-        "v4_0AI_distribution_sell_count",
-        "v4_0AJ_cycle_trim_allowed_count",
-        "v4_0AJ_cycle_trim_cooldown_blocked_count",
-        "v4_0AJ_target_reduce_blocked_count",
-        "v4_0AJ_accumulate_target_reduce_blocked_count",
-        "v4_0AJ_soft_defense_target_reduce_allowed_count",
-        "v4_0AJ_distribution_target_reduce_allowed_count",
-        "v4_0AJ_low_repair_target_reduce_blocked_count",
-        "v4_0AJ_target_gap_relabelled_count",
-        "v4_0AJ_target_reduce_relabelled_count",
-        "v4_0AJ_starter_buy_count",
-        "v4_0AJ_repair_add_count",
-        "v4_0AJ_trend_add_count",
-        "v4_0AJ_opportunity_add_count",
-        "v4_0AJ_soft_defense_sell_count",
-        "v4_0AJ_distribution_sell_count",
-        "v4_0AJ_ambiguous_repair_soft_defense_sized_count",
-        "v4_0AK_cycle_trim_allowed_count",
-        "v4_0AK_cycle_trim_cooldown_blocked_count",
-        "v4_0AK_target_reduce_blocked_count",
-        "v4_0AK_accumulate_target_reduce_blocked_count",
-        "v4_0AK_soft_defense_target_reduce_allowed_count",
-        "v4_0AK_distribution_target_reduce_allowed_count",
-        "v4_0AK_low_repair_target_reduce_blocked_count",
-        "v4_0AK_target_gap_relabelled_count",
-        "v4_0AK_target_reduce_relabelled_count",
-        "v4_0AK_starter_buy_count",
-        "v4_0AK_repair_add_count",
-        "v4_0AK_trend_add_count",
-        "v4_0AK_opportunity_add_count",
-        "v4_0AK_soft_defense_sell_count",
-        "v4_0AK_distribution_sell_count",
-        "v4_0AK_defense_release_buy_count",
-        "v4_0AK_defense_release_blocked_count",
-        "v4_0AK_defense_release_expired_count",
-        "v4_0AL_cycle_trim_allowed_count",
-        "v4_0AL_cycle_trim_cooldown_blocked_count",
-        "v4_0AL_target_reduce_blocked_count",
-        "v4_0AL_accumulate_target_reduce_blocked_count",
-        "v4_0AL_soft_defense_target_reduce_allowed_count",
-        "v4_0AL_distribution_target_reduce_allowed_count",
-        "v4_0AL_low_repair_target_reduce_blocked_count",
-        "v4_0AL_target_gap_relabelled_count",
-        "v4_0AL_target_reduce_relabelled_count",
-        "v4_0AL_starter_buy_count",
-        "v4_0AL_repair_add_count",
-        "v4_0AL_trend_add_count",
-        "v4_0AL_opportunity_add_count",
-        "v4_0AL_soft_defense_sell_count",
-        "v4_0AL_distribution_sell_count",
-        "v4_0AL_defense_release_buy_count",
-        "v4_0AL_defense_release_blocked_count",
-        "v4_0AL_defense_release_expired_count",
-        "v4_0AM_cycle_trim_allowed_count",
-        "v4_0AM_cycle_trim_cooldown_blocked_count",
-        "v4_0AM_target_reduce_blocked_count",
-        "v4_0AM_accumulate_target_reduce_blocked_count",
-        "v4_0AM_soft_defense_target_reduce_allowed_count",
-        "v4_0AM_distribution_target_reduce_allowed_count",
-        "v4_0AM_low_repair_target_reduce_blocked_count",
-        "v4_0AM_target_gap_relabelled_count",
-        "v4_0AM_target_reduce_relabelled_count",
-        "v4_0AM_starter_buy_count",
-        "v4_0AM_value_recovery_count",
-        "v4_0AM_trend_cont_count",
-        "v4_0AM_opportunity_add_count",
-        "v4_0AM_soft_defense_sell_count",
-        "v4_0AM_distribution_sell_count",
-        "v4_0AM_defense_episode_started_count",
-        "v4_0AM_defense_episode_hard_closed_count",
-        "v4_0AM_defense_release_stage1_buy_count",
-        "v4_0AM_defense_release_stage2_buy_count",
-        "v4_0AM_defense_release_blocked_cooldown_count",
-        "v4_0AM_defense_release_blocked_sizing_count",
-        "v4_0AM_defense_release_blocked_min_notional_count",
-        "v4_0AM_defense_release_expired_count",
-        "v4_0AN_defense_episode_started_count",
-        "v4_0AN_defense_release_buy_count",
-        "v4_0AN_defense_release_toxic_blocked_count",
-        "v4_0AN_defense_release_quality_weak_count",
-        "v4_0AN_defense_release_quality_normal_count",
-        "v4_0AN_defense_release_quality_high_count",
-        "v4_0AN_defense_release_blocked_min_drawdown_count",
-        "v4_0AN_defense_release_blocked_min_notional_count",
-        "v4_0AN_defense_episode_closed_by_normal_buy_count",
-        "v4_0AN_defense_episode_hard_closed_count",
-        "v4_0AO_safe_recovery_toxic_probe_count",
-        "v4_0AO_safe_recovery_high_location_capped_count",
-        "v4_0AO_trend_cont_hot_location_capped_count",
-        "v4_0AO_starter_bear_rally_risk_count",
-        "v4_0AO_hard_low_quiet_candidate_count",
-    ]
-    if actions.empty or "reason" not in actions.columns:
-        out = {f"{tag}_count": 0 for tag in tags}
-    else:
-        reason = actions["reason"].astype(str)
-        out = {f"{tag}_count": int(reason.str.contains(tag, regex=False).sum()) for tag in tags}
+    """Return current Official V1 diagnostic counters without historical V4.0 noise."""
+    out: dict[str, int] = {}
     if diagnostics is not None and not diagnostics.empty:
-        for key in diag_keys:
-            if key in diagnostics.columns:
-                out[key] = int(pd.to_numeric(diagnostics[key], errors="coerce").fillna(0).sum())
-            else:
-                out.setdefault(key, 0)
-        for key in diagnostics.columns:
-            if str(key).startswith("v4_2_"):
+        for key in sorted(diagnostics.columns):
+            if str(key).startswith("core_"):
                 out[str(key)] = int(pd.to_numeric(diagnostics[key], errors="coerce").fillna(0).sum())
-    else:
-        for key in diag_keys:
-            out.setdefault(key, 0)
+    if actions.empty or "reason" not in actions.columns:
+        return out
+    reason_text = actions["reason"].fillna("").astype(str)
+    current_tags = [
+        "core_bear_base",
+        "core_bear_base_exit",
+        "core_deep_base_recovery",
+        "core_intent_accumulate",
+        "core_intent_defend",
+        "core_intent_distribute",
+        "core_intent_hold",
+        "core_limited_recovery_overlay",
+        "core_post_crash_recoil",
+        "core_recovery_credit_soft",
+        "core_regime_bear",
+        "core_regime_bull",
+        "core_regime_range",
+        "core_regime_transition",
+        "core_staged_recovery",
+    ]
+    for tag in current_tags:
+        out[f"{tag}_count"] = int(reason_text.str.contains(tag, regex=False).sum())
     return out
-
-
 def _metric_line(metrics: dict[str, float | str | int]) -> str:
     return (
         f"strategy annual={metrics['strategy_annual_return']:.2%}, "
@@ -1555,3 +1050,4 @@ def _metric_line(metrics: dict[str, float | str | int]) -> str:
 
 if __name__ == "__main__":
     main()
+

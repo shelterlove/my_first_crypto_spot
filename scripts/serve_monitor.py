@@ -53,7 +53,7 @@ class AuthenticatedStaticHandler(SimpleHTTPRequestHandler):
 
     def send_auth_required(self) -> None:
         self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="V4.8 Monitor"')
+        self.send_header("WWW-Authenticate", 'Basic realm="Official V1 Monitor"')
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.end_headers()
         self.wfile.write(b"Authentication required.\n")

@@ -14,16 +14,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from crypto_spot_v1 import strategy_utils
-from crypto_spot_v1.benchmark import build_strategy
-from crypto_spot_v1.database import load_candles_from_db
-from crypto_spot_v1.decision import build_decision_record, build_strategy_manifest
-from crypto_spot_v1.strategy_rebalance import PortfolioState, PositionState
+from futures_v1 import strategy_utils
+from futures_v1.benchmark import build_strategy
+from futures_v1.database import load_candles_from_db
+from futures_v1.decision import build_decision_record, build_strategy_manifest
+from futures_v1.strategy_rebalance import PortfolioState, PositionState
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--strategy", default="v4_8_eth_bnb", help="Registered strategy name.")
+    parser.add_argument("--strategy", default="eth_bnb_futures_v1", help="Registered strategy name.")
     parser.add_argument("--config", default="configs/backtest_v1.json", help="Backtest config path.")
     parser.add_argument("--output-dir", default="results/daily_signals", help="Signal output directory.")
     parser.add_argument(
@@ -97,7 +97,7 @@ def _load_data_with_btc_regime(config: dict) -> dict[str, pd.DataFrame]:
     load_symbols = list(dict.fromkeys(symbols + config.get("reference_symbols", [])))
     all_dfs = {
         symbol: strategy_utils.compute_indicators(load_candles_from_db(
-            exchange="binance",
+            exchange="binance_um_futures",
             symbol=symbol,
             timeframe=config["timeframe"],
         ))
