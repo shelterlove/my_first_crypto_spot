@@ -34,8 +34,10 @@ def test_recent_futures_report_is_loaded() -> None:
             "strategy": "eth_bnb_futures_v1",
             "wallet_balance_usdt": "100",
             "account_equity_usdt": "100",
-            "target_gross_cap": "3.00",
-            "exchange_leverage": 3,
+            "target_gross_cap": "1.25",
+            "exchange_leverage": 2,
+            "hard_account_gross_limit": "1.50",
+            "account_gross_after": {"gross_ratio": "1.60"},
             "orders": [],
             "positions": {},
         }
@@ -45,6 +47,7 @@ def test_recent_futures_report_is_loaded() -> None:
     assert payload["latest_futures_report"]["mode"] == "dry_run"
     assert payload["latest_futures_report"]["order_count"] == 0
     assert len(payload["recent_futures_reports"]) == 1
+    assert any("hard limit" in alert["message"] for alert in payload["alerts"])
 
 
 def main() -> None:

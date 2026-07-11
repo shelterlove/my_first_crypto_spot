@@ -896,7 +896,8 @@ class StrategyCore(
             current_prices=current_prices,
             execution_portfolio=execution_portfolio,
         )
-        return decision.final_target_pct
+        target = self._apply_research_target_gross_cap(decision.final_target_pct)
+        return self._apply_research_financing_gate(target, candles_by_symbol.get(symbol))[0]
 
     def execution_transform_diagnostics_for_symbol_with_portfolios(
         self,
@@ -915,7 +916,52 @@ class StrategyCore(
             current_prices=current_prices,
             execution_portfolio=execution_portfolio,
         )
-        return decision.final_target_pct, decision.reason
+        target = self._apply_research_target_gross_cap(decision.final_target_pct)
+        target, gate_reason = self._apply_research_financing_gate(target, candles_by_symbol.get(symbol))
+        return target, f"{decision.reason}+{gate_reason}" if gate_reason else decision.reason
+
+    def _apply_research_target_gross_cap(self, target: float) -> float:
+        cap = float(getattr(self, "RESEARCH_TARGET_GROSS_CAP", 0.0) or 0.0)
+        return min(float(target), cap) if cap > 0.0 else float(target)
+
+    def _apply_research_financing_gate(
+        self,
+        target: float,
+        df: pd.DataFrame | None,
+    ) -> tuple[float, str]:
+        if not bool(getattr(self, "RESEARCH_FINANCING_GATE_ENABLED", False)) or df is None or df.empty:
+            return float(target), ""
+        latest = df.iloc[-1]
+        regime = str(latest.get("btc_regime", "RANGE") or "RANGE")
+        strong_cap = float(getattr(self, "RESEARCH_FINANCING_GATE_STRONG_BULL_CAP", 0.0) or 0.0)
+        non_strong_cap = float(getattr(self, "RESEARCH_FINANCING_GATE_NON_STRONG_BULL_CAP", 0.0) or 0.0)
+        cap = strong_cap if regime == "STRONG_BULL" else non_strong_cap
+        reasons = [f"financing-gate_{regime.lower()}"]
+
+        vol_target = float(getattr(self, "RESEARCH_FINANCING_GATE_VOL_TARGET", 0.0) or 0.0)
+        if regime != "STRONG_BULL" and vol_target > 0.0 and len(df) >= 31:
+            returns = pd.to_numeric(df["close"], errors="coerce").pct_change().tail(30)
+            realized_vol = float(returns.std(ddof=1) * (365.25 ** 0.5))
+            if realized_vol > 0.0:
+                min_cap = float(getattr(self, "RESEARCH_FINANCING_GATE_VOL_MIN_CAP", 0.8) or 0.8)
+                max_cap = float(getattr(self, "RESEARCH_FINANCING_GATE_VOL_MAX_CAP", 1.2) or 1.2)
+                cap = min(cap, max(min_cap, min(max_cap, vol_target / realized_vol)))
+                reasons.append("vol")
+
+        funding_quantile = float(getattr(self, "RESEARCH_FINANCING_GATE_FUNDING_QUANTILE", 0.0) or 0.0)
+        if funding_quantile > 0.0 and "funding_rate_daily" in df.columns and len(df) >= 31:
+            funding = pd.to_numeric(df["funding_rate_daily"], errors="coerce").dropna()
+            history = funding.iloc[:-1].tail(180)
+            latest_funding = float(funding.iloc[-1]) if not funding.empty else 0.0
+            if len(history) >= 30:
+                threshold = float(history.quantile(funding_quantile))
+                if latest_funding > max(0.0, threshold):
+                    cap = min(cap, float(getattr(self, "RESEARCH_FINANCING_GATE_FUNDING_CAP", 1.0) or 1.0))
+                    reasons.append("funding-high")
+
+        if cap <= 0.0:
+            return float(target), "+".join(reasons)
+        return min(float(target), cap), "+".join(reasons)
 
     def _outer_low_entry(self, df: pd.DataFrame, price: float | None = None) -> bool:
         return self._core_execution_engine._outer_low_entry(df)

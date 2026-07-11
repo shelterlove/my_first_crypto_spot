@@ -23,7 +23,7 @@ function render(data) {
     `${data.strategy || "strategy"} | ${joinSymbols(data.symbols)} | generated ${shortTime(data.generated_at)}`;
   renderStatus(data);
   renderAlerts(data.alerts || []);
-  renderSignals(data.latest_signal);
+  renderSignals(data.latest_futures_report);
   renderPositions(data.latest_futures_report);
   renderOrders(data.latest_futures_report);
   renderReports(data);
@@ -31,15 +31,16 @@ function render(data) {
 
 function renderStatus(data) {
   const futures = data.latest_futures_report || {};
-  const signal = data.latest_signal || {};
   const risk = futures.risk || {};
+  const daemon = data.daemon_status || {};
   const items = [
+    ["Daemon", daemon.status || "unknown", daemon.detail || "No daemon status"],
     ["Futures Mode", futures.mode || "none", futures.path || "No futures report"],
     ["Wallet USDT", money(futures.wallet_balance_usdt), "Latest reported equity"],
     ["Orders", String(futures.order_count || 0), "Latest planned futures orders"],
     ["Liq. Buffer", risk.min_liquidation_buffer_pct == null ? "n/a" : pct.format(Number(risk.min_liquidation_buffer_pct)), "Minimum futures buffer"],
+    ["Account Gross", risk.gross_ratio == null ? "n/a" : `${Number(risk.gross_ratio).toFixed(3)}x`, `Hard limit ${risk.hard_account_gross_limit || "n/a"}x`],
     ["Target Gross Cap", futures.target_gross_cap || "n/a", `Exchange leverage ${futures.exchange_leverage || "n/a"}`],
-    ["Signal Age", age(signal.mtime), signal.path || "No signal file"],
     ["Futures Age", age(futures.mtime), futures.path || "No futures report"],
   ];
   document.getElementById("statusGrid").innerHTML = items.map(([label, value, hint]) => `
@@ -62,17 +63,36 @@ function renderAlerts(alerts) {
   `).join("");
 }
 
-function renderSignals(signal) {
-  document.getElementById("signalPath").textContent = signal ? signal.path : "No signal";
-  const rows = signal && Array.isArray(signal.rows) ? signal.rows : [];
+function renderSignals(report) {
+  document.getElementById("signalPath").textContent = report ? report.path : "No executor target";
+  const snapshots = report && report.target_snapshots ? report.target_snapshots : {};
+  const sleeves = report && report.symbol_sleeves ? report.symbol_sleeves : {};
+  const positions = report && report.positions ? report.positions : {};
+  const orders = report && Array.isArray(report.orders) ? report.orders : [];
+  const rows = Object.entries(snapshots).map(([symbol, snapshot]) => {
+    const sleeve = sleeves[symbol] || {};
+    const position = positions[symbol] || {};
+    const sleeveValue = Number(sleeve.virtual_total_value_usdt || 0);
+    const currentNotional = Math.abs(Number(position.position_amt || 0)) * Number(position.mark_price || 0);
+    const apiSymbol = String(snapshot.symbol || symbol).replace("/", "");
+    const order = orders.find(item => item.symbol === apiSymbol) || null;
+    return {
+      symbol,
+      action: order ? order.side : "HOLD",
+      current_pct: sleeveValue > 0 ? currentNotional / sleeveValue : null,
+      target_pct: snapshot.target_gross,
+      signal_timestamp: snapshot.signal_timestamp,
+      reason: order ? order.reason : "target_reached",
+    };
+  });
   document.getElementById("signalsBody").innerHTML = rows.length ? rows.map(row => `
     <tr>
       <td>${escapeHtml(row.symbol)}</td>
       <td><span class="badge ${escapeHtml(String(row.action || "").toLowerCase())}">${escapeHtml(row.action || "hold")}</span></td>
       <td>${formatMaybePct(row.current_pct)}</td>
       <td>${formatMaybePct(row.target_pct)}</td>
-      <td>${escapeHtml(row.confirmed_state || row.raw_state || "")}</td>
-      <td class="reason" title="${escapeHtml(row.no_trade_reason || row.reason || "")}">${escapeHtml(row.no_trade_reason || row.reason || "")}</td>
+      <td>${escapeHtml(shortDate(row.signal_timestamp))}</td>
+      <td class="reason" title="${escapeHtml(row.reason || "")}">${escapeHtml(row.reason || "")}</td>
     </tr>
   `).join("") : emptyRow(6, "No signal rows.");
 }
@@ -169,6 +189,11 @@ function age(timestamp) {
 function shortTime(timestamp) {
   if (!timestamp) return "n/a";
   return new Date(timestamp).toLocaleString();
+}
+
+function shortDate(timestamp) {
+  if (!timestamp) return "n/a";
+  return new Date(timestamp).toISOString().slice(0, 10);
 }
 
 function joinSymbols(symbols) {

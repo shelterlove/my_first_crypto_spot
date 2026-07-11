@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import numpy as np
 import pandas as pd
 
@@ -54,6 +55,29 @@ def execute_action_in_backtest(
         if pos.quantity <= 1e-12:
             pos.quantity = 0.0
             pos.avg_cost = 0.0
+
+
+def apply_execution_friction(
+    action: Action,
+    strategy: PortfolioStrategyBase,
+    *,
+    apply_fill_ratio: bool = True,
+) -> Action:
+    slippage_bps = float(getattr(strategy, "RESEARCH_SLIPPAGE_BPS", 0.0) or 0.0)
+    fill_ratio = float(getattr(strategy, "RESEARCH_FILL_RATIO", 1.0) or 0.0) if apply_fill_ratio else 1.0
+    if slippage_bps < 0.0:
+        raise ValueError("RESEARCH_SLIPPAGE_BPS must be >= 0")
+    if fill_ratio <= 0.0 or fill_ratio > 1.0:
+        raise ValueError("RESEARCH_FILL_RATIO must be > 0 and <= 1")
+    slip = slippage_bps / 10_000.0
+    price = action.price * (1.0 + slip if action.side == "buy" else 1.0 - slip)
+    diagnostics = dict(action.diagnostics)
+    diagnostics.update({
+        "research_slippage_bps": slippage_bps,
+        "research_fill_ratio": fill_ratio,
+        "requested_quantity": action.quantity,
+    })
+    return replace(action, quantity=action.quantity * fill_ratio, price=price, diagnostics=diagnostics)
 
 
 def _build_execution_transform_actions(
@@ -205,6 +229,21 @@ def run_rebalance_backtest(
             else:
                 truncated[symbol] = df.iloc[:0]
 
+        hard_gross_actions: list[Action] = []
+        if use_execution_transform:
+            hard_gross_actions = position_book.build_hard_gross_reduction_actions(
+                strategy=strategy,
+                portfolio=portfolio,
+                mark_prices=execution_prices,
+                fee_rate=fee_rate,
+            )
+            hard_gross_actions = [
+                apply_execution_friction(action, strategy, apply_fill_ratio=False)
+                for action in hard_gross_actions
+            ]
+            for action in hard_gross_actions:
+                execute_action_in_backtest(action, portfolio, fee_rate)
+
         raw_actions = (
             strategy.compute_actions(truncated, decision_portfolio, execution_prices)
             if execution_prices else []
@@ -229,6 +268,8 @@ def run_rebalance_backtest(
         else:
             actions = raw_actions
 
+        actions = [apply_execution_friction(action, strategy) for action in actions]
+
         for action in actions:
             if action.side == "sell":
                 execute_action_in_backtest(action, portfolio, fee_rate)
@@ -244,12 +285,23 @@ def run_rebalance_backtest(
                 intraday_rows=intraday_rows,
                 fee_rate=fee_rate,
             )
+            intraday_shock_actions = [apply_execution_friction(action, strategy) for action in intraday_shock_actions]
             for action in intraday_shock_actions:
                 execute_action_in_backtest(action, portfolio, fee_rate)
             actions.extend(intraday_shock_actions)
 
-            financing_cost_today = position_book.financing_cost_today(strategy, portfolio)
-            if financing_cost_today > 0.0:
+            intraday_liquidation_actions = position_book.build_intraday_liquidation_actions(
+                strategy=strategy,
+                portfolio=portfolio,
+                intraday_rows=intraday_rows,
+                fee_rate=fee_rate,
+            )
+            for action in intraday_liquidation_actions:
+                execute_action_in_backtest(action, portfolio, fee_rate)
+            actions.extend(intraday_liquidation_actions)
+
+            financing_cost_today = position_book.financing_cost_today(strategy, portfolio, intraday_rows)
+            if financing_cost_today != 0.0:
                 portfolio.cash -= financing_cost_today
                 cumulative_financing += financing_cost_today
             liquidation_actions = _build_execution_transform_liquidation_actions(
@@ -261,6 +313,8 @@ def run_rebalance_backtest(
             for action in liquidation_actions:
                 execute_action_in_backtest(action, portfolio, fee_rate)
             actions.extend(liquidation_actions)
+
+        actions = hard_gross_actions + actions
 
         for action in actions:
             notional = action.quantity * action.price

@@ -562,12 +562,104 @@ def build_event_triggered_rebalance_actions(
     return actions
 
 
-def financing_cost_today(strategy: PortfolioStrategyBase, portfolio: PortfolioState) -> float:
+def financing_cost_today(
+    strategy: PortfolioStrategyBase,
+    portfolio: PortfolioState,
+    intraday_rows: dict[str, pd.Series] | None = None,
+) -> float:
     borrowed_cash = max(0.0, -portfolio.cash)
     apr = borrow_apr(strategy)
-    if apr <= 0.0 or borrowed_cash <= 0.0:
-        return 0.0
-    return borrowed_cash * apr / 365.25
+    cost = borrowed_cash * apr / 365.25 if apr > 0.0 and borrowed_cash > 0.0 else 0.0
+    for symbol, row in (intraday_rows or {}).items():
+        rate = float(row.get("funding_rate_daily", 0.0) or 0.0)
+        price = float(row.get("close", 0.0) or 0.0)
+        pos = portfolio.positions.get(symbol, PositionState())
+        if rate != 0.0 and price > 0.0 and pos.quantity > 0.0:
+            cost += pos.quantity * price * rate
+    return cost
+
+
+def build_hard_gross_reduction_actions(
+    strategy: PortfolioStrategyBase,
+    portfolio: PortfolioState,
+    mark_prices: dict[str, float],
+    fee_rate: float,
+) -> list[Action]:
+    hard_cap = float(getattr(strategy, "RESEARCH_ACTUAL_GROSS_HARD_CAP", 0.0) or 0.0)
+    reduce_to = float(getattr(strategy, "RESEARCH_ACTUAL_GROSS_REDUCE_TO", 0.0) or 0.0)
+    if hard_cap <= 0.0 or reduce_to <= 0.0 or reduce_to >= hard_cap:
+        return []
+    actions = []
+    for symbol, price in mark_prices.items():
+        pos = portfolio.positions.get(symbol, PositionState())
+        total = portfolio.cash + pos.quantity * price
+        if price <= 0.0 or pos.quantity <= 1e-12 or total <= 0.0:
+            continue
+        current_gross = pos.quantity * price / total
+        if current_gross <= hard_cap:
+            continue
+        desired_qty = max(0.0, reduce_to * total / price)
+        quantity = min(pos.quantity, max(0.0, pos.quantity - desired_qty))
+        if quantity * price < max(execution_min_notional(strategy), 1e-9):
+            continue
+        actions.append(Action(
+            symbol=symbol,
+            side="sell",
+            quantity=quantity,
+            price=price,
+            reason=f"{strategy.name}_sell_research-hard-gross",
+            diagnostics={
+                "setup": "research-hard-gross",
+                "actual_position_before": current_gross,
+                "actual_position_after": reduce_to,
+                "hard_gross_cap": hard_cap,
+                "reduce_to_gross": reduce_to,
+                "fee_rate": fee_rate,
+            },
+        ))
+    return actions
+
+
+def build_intraday_liquidation_actions(
+    strategy: PortfolioStrategyBase,
+    portfolio: PortfolioState,
+    intraday_rows: dict[str, pd.Series],
+    fee_rate: float,
+) -> list[Action]:
+    if not bool(getattr(strategy, "RESEARCH_INTRADAY_LIQUIDATION", False)):
+        return []
+    mmr = float(getattr(strategy, "RESEARCH_MAINTENANCE_MARGIN_RATE", 0.005) or 0.0)
+    liquidation_fee = float(getattr(strategy, "RESEARCH_LIQUIDATION_FEE_RATE", 0.01) or 0.0)
+    actions = []
+    for symbol, row in intraday_rows.items():
+        pos = portfolio.positions.get(symbol, PositionState())
+        low = float(row.get("low", 0.0) or 0.0)
+        high = float(row.get("high", 0.0) or 0.0)
+        if pos.quantity <= 1e-12 or low <= 0.0 or not (0.0 <= mmr < 1.0):
+            continue
+        if portfolio.cash >= 0.0:
+            continue
+        trigger = -portfolio.cash / (pos.quantity * (1.0 - mmr))
+        if trigger <= 0.0 or low > trigger or high < trigger:
+            continue
+        fill_price = trigger * max(0.0, 1.0 - liquidation_fee)
+        actions.append(Action(
+            symbol=symbol,
+            side="sell",
+            quantity=pos.quantity,
+            price=fill_price,
+            reason=f"{strategy.name}_sell_research-intraday-liquidation",
+            diagnostics={
+                "setup": "research-intraday-liquidation",
+                "margin_liquidation": True,
+                "liquidation_trigger_price": trigger,
+                "intraday_low": low,
+                "maintenance_margin_rate": mmr,
+                "liquidation_fee_rate": liquidation_fee,
+                "fee_rate": fee_rate,
+            },
+        ))
+    return actions
 
 
 def build_liquidation_actions(

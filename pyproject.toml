@@ -4,17 +4,17 @@ version = "1.0.0"
 description = "Official ETH/BNB futures strategy for Binance USD-M Futures Testnet."
 requires-python = ">=3.10"
 dependencies = [
-  "numpy",
-  "pandas",
-  "sqlalchemy",
-  "psycopg2-binary",
-  "python-dotenv",
-  "requests",
+  "numpy>=2.2,<3",
+  "pandas>=2.3,<3",
+  "sqlalchemy>=2.0,<3",
+  "psycopg2-binary>=2.9,<3",
+  "python-dotenv>=1.2,<2",
+  "requests>=2.32,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest",
+  "pytest>=9,<10",
 ]
 
 [tool.pytest.ini_options]

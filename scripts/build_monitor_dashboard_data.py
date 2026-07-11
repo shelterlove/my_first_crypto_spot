@@ -33,33 +33,23 @@ def main() -> None:
 
 
 def build_payload(*, results_dir: Path, recent_limit: int) -> dict[str, Any]:
-    latest_signal = latest_signal_payload(results_dir)
     futures_reports = report_payloads(results_dir / "binance_futures_testnet", recent_limit)
     latest_futures = futures_reports[0] if futures_reports else None
-    alerts = build_alerts(latest_signal=latest_signal, latest_futures=latest_futures)
+    daemon_status = read_json(PROJECT_ROOT / "runtime" / "daemon_status.json")
+    if not isinstance(daemon_status, dict):
+        daemon_status = None
+    alerts = build_alerts(
+        latest_futures=latest_futures,
+        daemon_status=daemon_status,
+    )
     return {
         "generated_at": pd.Timestamp.now("UTC").isoformat(),
         "strategy": "eth_bnb_futures_v1",
         "symbols": ["ETH/USDT", "BNB/USDT"],
         "alerts": alerts,
-        "latest_signal": latest_signal,
+        "daemon_status": daemon_status,
         "latest_futures_report": latest_futures,
         "recent_futures_reports": futures_reports,
-    }
-
-
-def latest_signal_payload(results_dir: Path) -> dict[str, Any] | None:
-    files = sorted(results_dir.glob("daily_signals*/**/*_signals.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not files:
-        return None
-    path = files[0]
-    rows = read_json(path)
-    if not isinstance(rows, list):
-        rows = []
-    return {
-        "path": rel(path),
-        "mtime": mtime(path),
-        "rows": rows,
     }
 
 
@@ -78,6 +68,10 @@ def normalize_report(path: Path, data: dict[str, Any]) -> dict[str, Any]:
     orders = data.get("orders") if isinstance(data.get("orders"), list) else []
     responses = data.get("responses") if isinstance(data.get("responses"), list) else []
     positions = data.get("positions") if isinstance(data.get("positions"), dict) else {}
+    filled_count = sum(
+        1 for response in responses
+        if isinstance(response, dict) and str(response.get("status", "")).upper() == "FILLED"
+    )
     return {
         "path": rel(path),
         "mtime": mtime(path),
@@ -91,15 +85,23 @@ def normalize_report(path: Path, data: dict[str, Any]) -> dict[str, Any]:
         "deploy_equity_usdt": data.get("deploy_equity_usdt"),
         "sleeve_value_usdt": data.get("sleeve_value_usdt"),
         "symbol_sleeves": data.get("symbol_sleeves", {}),
+        "target_snapshots": data.get("target_snapshots", {}),
         "exchange_leverage": data.get("exchange_leverage"),
         "target_gross_cap": data.get("target_gross_cap"),
+        "hard_account_gross_limit": data.get("hard_account_gross_limit"),
+        "hard_symbol_gross_limit": data.get("hard_symbol_gross_limit"),
+        "account_gross_before": data.get("account_gross_before", {}),
+        "account_gross_after": data.get("account_gross_after", {}),
+        "symbol_gross_after": data.get("symbol_gross_after", {}),
         "orders": orders,
         "order_count": len(orders),
         "responses": responses,
         "response_count": len(responses),
+        "filled_count": filled_count,
         "positions": positions,
         "setup_plan": data.get("setup_plan", []),
         "setup_responses": data.get("setup_responses", []),
+        "state_updated": bool(data.get("state_updated", False)),
         "risk": risk_summary(data),
     }
 
@@ -128,23 +130,45 @@ def risk_summary(data: dict[str, Any]) -> dict[str, Any]:
     return {
         "min_liquidation_buffer_pct": min(buffers) if buffers else None,
         "gross_notional_usdt": sum(notionals),
+        "gross_ratio": nested_float(data, "account_gross_after", "gross_ratio"),
+        "projected_gross_ratio": nested_float(data, "account_gross_before", "projected_gross_ratio"),
+        "hard_account_gross_limit": float(data.get("hard_account_gross_limit", 0) or 0),
+        "symbol_gross_breached": any(
+            bool(item.get("hard_limit_breached"))
+            for item in (data.get("symbol_gross_after", {}) or {}).values()
+            if isinstance(item, dict)
+        ),
         "clipped_order_count": len(clipped),
     }
 
 
+def nested_float(data: dict[str, Any], parent: str, key: str) -> float | None:
+    value = data.get(parent)
+    if not isinstance(value, dict) or value.get(key) in (None, ""):
+        return None
+    try:
+        return float(value[key])
+    except (TypeError, ValueError):
+        return None
+
+
 def build_alerts(
     *,
-    latest_signal: dict[str, Any] | None,
     latest_futures: dict[str, Any] | None,
+    daemon_status: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     alerts = []
     now = pd.Timestamp.now("UTC")
-    if latest_signal is None:
-        alerts.append({"level": "warn", "message": "No daily signal file found."})
-    else:
-        signal_age = age_hours(latest_signal.get("mtime"), now)
-        if signal_age is not None and signal_age > 36:
-            alerts.append({"level": "warn", "message": f"Latest signal is stale: {signal_age:.1f} hours old."})
+    if daemon_status is not None:
+        daemon_state = str(daemon_status.get("status", "") or "")
+        if daemon_state == "failed":
+            alerts.append({
+                "level": "danger",
+                "message": f"Latest daemon cycle failed: {daemon_status.get('command', '')}",
+            })
+        daemon_age = age_hours(daemon_status.get("updated_at"), now)
+        if daemon_age is not None and daemon_age > 36:
+            alerts.append({"level": "warn", "message": f"Daemon status is stale: {daemon_age:.1f} hours old."})
 
     if latest_futures is None:
         alerts.append({"level": "warn", "message": "No executor report found."})
@@ -153,10 +177,25 @@ def build_alerts(
     report_age = age_hours(latest_futures.get("mtime"), now)
     if report_age is not None and report_age > 36:
         alerts.append({"level": "warn", "message": f"Futures report is stale: {report_age:.1f} hours old."})
+    if latest_futures.get("mode") == "dry_run":
+        alerts.append({"level": "warn", "message": "Latest executor report is dry-run; no orders were submitted."})
+    if latest_futures.get("mode") == "execute" and not latest_futures.get("state_updated"):
+        alerts.append({"level": "danger", "message": "Execute report did not confirm a state update."})
+    if (
+        latest_futures.get("mode") == "execute"
+        and latest_futures.get("filled_count", 0) != latest_futures.get("order_count", 0)
+    ):
+        alerts.append({"level": "danger", "message": "Confirmed fill count does not match planned order count."})
     risk = latest_futures.get("risk") if isinstance(latest_futures.get("risk"), dict) else {}
     min_buffer = risk.get("min_liquidation_buffer_pct")
     if min_buffer is not None and float(min_buffer) < 0.20:
         alerts.append({"level": "danger", "message": "Futures liquidation buffer below 20%."})
+    hard_gross = risk.get("hard_account_gross_limit")
+    actual_gross = risk.get("gross_ratio")
+    if hard_gross and actual_gross is not None and float(actual_gross) > float(hard_gross):
+        alerts.append({"level": "danger", "message": "Actual account gross exceeds the configured hard limit."})
+    if risk.get("symbol_gross_breached"):
+        alerts.append({"level": "danger", "message": "A virtual sleeve exceeds its hard gross limit."})
     if risk.get("clipped_order_count", 0):
         alerts.append({"level": "info", "message": "Futures has clipped orders. Check clip_reason."})
     return alerts

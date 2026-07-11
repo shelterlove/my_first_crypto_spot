@@ -47,6 +47,36 @@ python scripts\sync_binance_klines.py --symbols BTC/USDT,ETH/USDT,BNB/USDT --tim
 python scripts\render_strategy_review_chart.py
 ```
 
+The deployable baseline excludes OHLC-only intraday ladder fills that are not
+implemented by the testnet executor. Regenerate and review the full-window
+metrics before creating a release tag.
+
+The review writes `release_manifest.json` with the Git state, config hash,
+package versions, raw OHLCV hashes, execution assumptions, and per-symbol
+metrics.
+
+## Risk Research
+
+```powershell
+python scripts\research_risk_caps.py
+python scripts\research_symbol_weights.py
+python scripts\research_btc_regime.py
+python scripts\research_funding_stress.py
+python scripts\research_execution_leverage.py
+python scripts\research_realism_robustness.py
+python scripts\research_financing_gate.py
+```
+
+These scripts write ignored research tables under `results/research/` and do
+not change deployment defaults.
+
+Execution leverage experiment parameters, failed approaches, and decisions are
+recorded in `docs/EXECUTION_LEVERAGE_RESEARCH_CN.md`.
+Path-dependent cost modeling and robustness attribution are recorded in
+`docs/REALISM_ROBUSTNESS_RESEARCH_CN.md`.
+Financed-exposure gate experiments and their shadow-only decision are recorded
+in `docs/FINANCING_GATE_RESEARCH_CN.md`.
+
 Default review:
 
 - Strategy: `eth_bnb_futures_v1`
@@ -63,26 +93,30 @@ python scripts\generate_daily_signal.py --strategy eth_bnb_futures_v1 --config c
 
 ## Futures Executor
 
+Use [docs/TESTNET_START_CN.md](docs/TESTNET_START_CN.md) for the first
+small-capital testnet cycle and its go/no-go checks.
+
 Dry run is the default:
 
 ```powershell
-python scripts\binance_futures_testnet_executor.py --config configs\backtest_v1.json --exchange-leverage 3 --target-gross-cap 3.00
+python scripts\binance_futures_testnet_executor.py --config configs\backtest_v1.json --exchange-leverage 2 --target-gross-cap 1.25 --hard-symbol-gross-limit 1.50 --hard-account-gross-limit 1.50
 ```
 
 Execute only after reviewing the dry-run report:
 
 ```powershell
-python scripts\binance_futures_testnet_executor.py --config configs\backtest_v1.json --exchange-leverage 3 --target-gross-cap 3.00 --execute
+python scripts\binance_futures_testnet_executor.py --config configs\backtest_v1.json --exchange-leverage 2 --target-gross-cap 1.25 --hard-symbol-gross-limit 1.50 --hard-account-gross-limit 1.50 --execute
 ```
 
-`--max-order-usdt` defaults to `0`, meaning no per-order cap. The executor
+The executor defaults to a `1000` USDT deployment cap, `250` USDT per-order
+cap, 25% available-margin reserve, and 30% minimum liquidation buffer. It
 writes reports to `results/binance_futures_testnet/` and stores the virtual
 sleeve ledger in `runtime/futures_state.json`.
 
 ## Daemon
 
 ```powershell
-python scripts\run_daemon.py --run-at-utc 01:10 --run-on-start --execute --exchange-leverage 3 --target-gross-cap 3.00
+python scripts\run_daemon.py --run-at-utc 01:10 --run-on-start --execute --exchange-leverage 2 --target-gross-cap 1.25
 ```
 
 The daemon syncs candles, runs the futures executor, and rebuilds monitor data.

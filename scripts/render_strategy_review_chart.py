@@ -4,9 +4,14 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
+import hashlib
 import html
+import importlib.metadata
 import io
+import json
 import math
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -21,6 +26,7 @@ if str(PROJECT_ROOT / "src") not in sys.path:
 
 from futures_v1.backtest_event_driven import run_rebalance_backtest  # noqa: E402
 from futures_v1.benchmark import V1BenchmarkRunner, build_strategy  # noqa: E402
+from futures_v1.strategy_core.execution_engine import ExecutionEngine  # noqa: E402
 
 
 SYMBOL_ORDER = ["ETH/USDT", "BNB/USDT"]
@@ -61,7 +67,6 @@ def main() -> None:
 
     runner = V1BenchmarkRunner(PROJECT_ROOT / "configs" / "backtest_v1.json", PROJECT_ROOT / "results")
     load_symbols = list(dict.fromkeys(symbols + ([] if "BTC/USDT" in symbols else ["BTC/USDT"])))
-    runner.config["symbols"] = load_symbols
     start_ts = _as_utc(args.start)
     end_ts = _as_utc(args.end)
     data = _load_review_data(runner, load_symbols, start_ts, end_ts)
@@ -71,6 +76,19 @@ def main() -> None:
 
     metrics_df = pd.DataFrame([metrics])
     metrics_df.to_csv(output_dir / "metrics.csv", index=False)
+    manifest = build_release_manifest(
+        strategy_name=args.strategy,
+        runner=runner,
+        data=data,
+        report=report,
+        metrics=metrics,
+        start_ts=start_ts,
+        end_ts=end_ts,
+    )
+    (output_dir / "release_manifest.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
     report["equity"].to_csv(output_dir / "equity_curves.csv", index=False)
     report["actions"].to_csv(output_dir / "actions.csv", index=False)
     report["prices"].to_csv(output_dir / "prices.csv", index=False)
@@ -102,6 +120,7 @@ def main() -> None:
     render_chart(report, metrics, args.strategy, start_ts, end_ts, chart_path)
     print(f"Wrote {chart_path}")
     print(f"Wrote {output_dir / 'metrics.csv'}")
+    print(f"Wrote {output_dir / 'release_manifest.json'}")
     print(_metric_line(metrics))
 
 
@@ -131,7 +150,21 @@ def _load_review_data(
         except ValueError as exc:
             if "No candles loaded" not in str(exc):
                 raise
-            runner._data_cache[symbol] = _load_binance_vision_daily(symbol, start_ts, end_ts)
+            cache_dir = PROJECT_ROOT / "results" / "data_cache" / "binance_um_futures_1d"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_name = (
+                f"{symbol.replace('/', '')}_{start_ts.strftime('%Y%m%d')}_"
+                f"{end_ts.strftime('%Y%m%d')}.csv.gz"
+            )
+            cache_path = cache_dir / cache_name
+            if cache_path.exists():
+                cached = pd.read_csv(cache_path)
+                cached["timestamp"] = pd.to_datetime(cached["timestamp"], utc=True)
+                runner._data_cache[symbol] = cached
+            else:
+                downloaded = _load_binance_vision_daily(symbol, start_ts, end_ts)
+                downloaded.to_csv(cache_path, index=False, compression="gzip")
+                runner._data_cache[symbol] = downloaded
     return runner._inject_btc_regime()
 
 
@@ -176,12 +209,28 @@ def _load_binance_vision_daily(symbol: str, start_ts: pd.Timestamp, end_ts: pd.T
     return out.sort_values("timestamp").reset_index(drop=True)
 
 
+def apply_execution_overrides(strategy, overrides: dict[str, float]) -> None:
+    config = getattr(strategy, "_core_config", None)
+    if config is None or not hasattr(strategy, "_core_execution_engine"):
+        raise ValueError("Strategy does not expose the V1 execution config boundary.")
+    unknown = set(overrides) - set(config.execution.__dataclass_fields__)
+    if unknown:
+        raise ValueError(f"Unknown execution config overrides: {sorted(unknown)}")
+    execution = replace(config.execution, **{name: float(value) for name, value in overrides.items()})
+    strategy._core_config = replace(config, execution=execution)
+    strategy._core_execution_engine = ExecutionEngine(strategy._core_config)
+
+
 def run_full_window(
     strategy_name: str,
     data: dict[str, pd.DataFrame],
     runner: V1BenchmarkRunner,
     start_ts: pd.Timestamp,
     end_ts: pd.Timestamp,
+    *,
+    target_gross_cap: float | None = None,
+    strategy_overrides: dict[str, float] | None = None,
+    execution_overrides: dict[str, float] | None = None,
 ) -> dict[str, pd.DataFrame]:
     config = runner.config
     capital = float(config["capital"]["initial"])
@@ -232,6 +281,14 @@ def run_full_window(
 
         strategy = build_strategy(strategy_name, capital, reserve, fee, min_notional=min_notional)
         setattr(strategy, "TARGET_ALLOC", {symbol: 1.0})
+        for name, value in (strategy_overrides or {}).items():
+            if not hasattr(strategy, name):
+                raise ValueError(f"Unknown strategy override: {name}")
+            setattr(strategy, name, float(value))
+        if execution_overrides:
+            apply_execution_overrides(strategy, execution_overrides)
+        if target_gross_cap is not None:
+            setattr(strategy, "RESEARCH_TARGET_GROSS_CAP", float(target_gross_cap))
         result = run_rebalance_backtest(
             {symbol: backtest_df},
             strategy,
@@ -528,9 +585,12 @@ def build_composite(equity: pd.DataFrame, prices: pd.DataFrame) -> pd.DataFrame:
         bh_sleeves.append(px.rename(columns={"price_norm": symbol}))
         position_sleeves.append(pos.rename(columns={"position_pct": symbol}))
 
-    merged = _merge_on_timestamp(sleeves)
-    bh = _merge_on_timestamp(bh_sleeves)
-    pos = _merge_on_timestamp(position_sleeves)
+    # A sleeve whose contract has not listed yet remains in cash. Outer alignment
+    # preserves the requested portfolio start instead of silently shortening the
+    # annualization window to the latest symbol listing date.
+    merged = _merge_on_timestamp(sleeves, fill_value=1.0)
+    bh = _merge_on_timestamp(bh_sleeves, fill_value=1.0)
+    pos = _merge_on_timestamp(position_sleeves, fill_value=0.0)
     out = pd.DataFrame({"timestamp": merged["timestamp"]})
     symbol_cols = [col for col in merged.columns if col != "timestamp"]
     out["strategy_equity"] = merged[symbol_cols].mean(axis=1)
@@ -578,6 +638,115 @@ def build_metrics(report: dict[str, pd.DataFrame], start_ts: pd.Timestamp, end_t
     metrics.update(_v4_guard_metrics(actions, report.get("diagnostics", pd.DataFrame())))
     metrics.update(_execution_transform_metrics(report.get("execution_transform_audit", pd.DataFrame())))
     return metrics
+
+
+def build_release_manifest(
+    *,
+    strategy_name: str,
+    runner: V1BenchmarkRunner,
+    data: dict[str, pd.DataFrame],
+    report: dict[str, pd.DataFrame],
+    metrics: dict[str, float | str | int],
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> dict:
+    config_bytes = runner.config_path.read_bytes()
+    strategy = build_strategy(
+        strategy_name,
+        float(runner.config["capital"]["initial"]),
+        float(runner.config["capital"]["reserve"]),
+        float(runner.config["cost"]["fee_rate"]),
+        min_notional=runner.config.get("cost", {}).get("min_notional"),
+    )
+    return {
+        "schema_version": 1,
+        "generated_at": pd.Timestamp.now("UTC").isoformat(),
+        "strategy": strategy_name,
+        "git": git_identity(),
+        "environment": {
+            "python": sys.version.split()[0],
+            "packages": dependency_versions(),
+        },
+        "config": {
+            "path": str(runner.config_path.relative_to(PROJECT_ROOT)).replace("\\", "/"),
+            "sha256": hashlib.sha256(config_bytes).hexdigest(),
+            "content": runner.config,
+        },
+        "window": {"start": start_ts.isoformat(), "end": end_ts.isoformat()},
+        "execution_assumptions": {
+            "mode": runner.config.get("execution", {}).get("mode", "next_open"),
+            "intraday_shock_ladder": bool(getattr(strategy, "EXECUTION_TRANSFORM_INTRADAY_SHOCK_LADDER_V1", False)),
+            "fee_rate": float(runner.config["cost"]["fee_rate"]),
+            "financing_model": "fixed_borrow_apr_proxy",
+            "funding_rates_included": False,
+            "exchange_liquidation_model": False,
+        },
+        "data": {
+            symbol: frame_fingerprint(frame, start_ts=start_ts, end_ts=end_ts)
+            for symbol, frame in sorted(data.items())
+        },
+        "portfolio_metrics": metrics,
+        "symbol_metrics": symbol_release_metrics(report),
+    }
+
+
+def git_identity() -> dict[str, str | bool | None]:
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        dirty = bool(subprocess.check_output(
+            ["git", "status", "--porcelain"], cwd=PROJECT_ROOT, text=True, stderr=subprocess.DEVNULL
+        ).strip())
+        return {"commit": commit, "dirty": dirty}
+    except (OSError, subprocess.CalledProcessError):
+        return {"commit": None, "dirty": None}
+
+
+def dependency_versions() -> dict[str, str | None]:
+    names = ("numpy", "pandas", "SQLAlchemy", "psycopg2-binary", "python-dotenv", "requests")
+    out = {}
+    for name in names:
+        try:
+            out[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            out[name] = None
+    return out
+
+
+def frame_fingerprint(frame: pd.DataFrame, *, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> dict:
+    columns = [column for column in ["timestamp", "open", "high", "low", "close", "volume"] if column in frame.columns]
+    raw = frame[(frame["timestamp"] >= start_ts) & (frame["timestamp"] <= end_ts)][columns].copy()
+    if "timestamp" in raw.columns:
+        raw["timestamp"] = pd.to_datetime(raw["timestamp"], utc=True).map(lambda value: value.isoformat())
+    payload = raw.to_csv(index=False, float_format="%.12g", lineterminator="\n").encode("utf-8")
+    return {
+        "rows": int(len(raw)),
+        "start": None if raw.empty else str(raw["timestamp"].iloc[0]),
+        "end": None if raw.empty else str(raw["timestamp"].iloc[-1]),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def symbol_release_metrics(report: dict[str, pd.DataFrame]) -> dict[str, dict[str, float | int]]:
+    equity = report["equity"]
+    actions = report["actions"]
+    out = {}
+    for symbol in SYMBOL_ORDER:
+        rows = equity[equity["symbol"] == symbol].sort_values("timestamp")
+        if rows.empty:
+            continue
+        curve = rows["equity_norm"].astype(float)
+        drawdown = curve / curve.cummax() - 1.0
+        symbol_actions = actions[actions["symbol"] == symbol] if not actions.empty else actions
+        out[symbol] = {
+            "total_return": float(curve.iloc[-1] - 1.0),
+            "max_drawdown": float(drawdown.min()),
+            "average_gross": float(rows["position_pct"].astype(float).mean()),
+            "max_gross": float(rows["position_pct"].astype(float).max()),
+            "trade_count": int(len(symbol_actions)),
+        }
+    return out
 
 
 def _execution_transform_metrics(audit: pd.DataFrame) -> dict[str, float | int]:
@@ -772,13 +941,16 @@ def render_chart(
     output.write_text("\n".join(parts), encoding="utf-8")
 
 
-def _merge_on_timestamp(frames: list[pd.DataFrame]) -> pd.DataFrame:
+def _merge_on_timestamp(frames: list[pd.DataFrame], *, fill_value: float) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     out = frames[0]
     for frame in frames[1:]:
-        out = pd.merge(out, frame, on="timestamp", how="inner")
-    return out.sort_values("timestamp").reset_index(drop=True)
+        out = pd.merge(out, frame, on="timestamp", how="outer")
+    out = out.sort_values("timestamp").reset_index(drop=True)
+    value_columns = [column for column in out.columns if column != "timestamp"]
+    out[value_columns] = out[value_columns].ffill().fillna(fill_value)
+    return out
 
 
 def _filter_timestamp_start(frame: pd.DataFrame, start_ts: pd.Timestamp) -> pd.DataFrame:

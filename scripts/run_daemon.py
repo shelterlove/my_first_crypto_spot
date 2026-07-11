@@ -9,6 +9,7 @@ manager on the VPS.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import time
@@ -27,9 +28,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="configs/backtest_v1.json")
     parser.add_argument("--symbols", default="BTC/USDT,ETH/USDT,BNB/USDT")
     parser.add_argument("--sync-start", default="2020-01-01")
-    parser.add_argument("--exchange-leverage", default="3")
-    parser.add_argument("--target-gross-cap", default="3.00")
-    parser.add_argument("--max-order-usdt", default="0")
+    parser.add_argument("--exchange-leverage", default="2")
+    parser.add_argument("--target-gross-cap", default="1.25")
+    parser.add_argument("--hard-account-gross-limit", default="1.50")
+    parser.add_argument("--hard-symbol-gross-limit", default="1.50")
+    parser.add_argument("--max-deploy-usdt", default="1000")
+    parser.add_argument("--margin-buffer-fraction", default="0.25")
+    parser.add_argument("--min-liquidation-buffer", default="0.30")
+    parser.add_argument("--max-order-usdt", default="250")
     parser.add_argument("--log-file", default="logs/futures_daemon.log")
     parser.add_argument("--stop-after-one", action="store_true", help="Run one cycle and exit. Useful for smoke checks.")
     return parser.parse_args()
@@ -58,6 +64,8 @@ def main() -> None:
 
 def run_cycle(args: argparse.Namespace, log_path: Path) -> None:
     log(log_path, "cycle started")
+    status_path = PROJECT_ROOT / "runtime" / "daemon_status.json"
+    write_cycle_status(status_path, status="running", command="", detail="cycle started")
     commands = [
         [
             sys.executable,
@@ -70,12 +78,27 @@ def run_cycle(args: argparse.Namespace, log_path: Path) -> None:
             args.sync_start,
         ],
         executor_command(args),
-        [sys.executable, "scripts/build_monitor_dashboard_data.py"],
     ]
     for command in commands:
         if not run_command(command, log_path):
             log(log_path, "cycle aborted after command failure")
+            write_cycle_status(
+                status_path,
+                status="failed",
+                command=" ".join(command),
+                detail="command failed",
+            )
+            run_command([sys.executable, "scripts/build_monitor_dashboard_data.py"], log_path)
             return
+    write_cycle_status(status_path, status="ok", command="", detail="cycle finished")
+    if not run_command([sys.executable, "scripts/build_monitor_dashboard_data.py"], log_path):
+        write_cycle_status(
+            status_path,
+            status="failed",
+            command="scripts/build_monitor_dashboard_data.py",
+            detail="monitor build failed",
+        )
+        return
     log(log_path, "cycle finished")
 
 
@@ -89,6 +112,16 @@ def executor_command(args: argparse.Namespace) -> list[str]:
         str(args.exchange_leverage),
         "--target-gross-cap",
         str(args.target_gross_cap),
+        "--hard-account-gross-limit",
+        str(args.hard_account_gross_limit),
+        "--hard-symbol-gross-limit",
+        str(args.hard_symbol_gross_limit),
+        "--max-deploy-usdt",
+        str(args.max_deploy_usdt),
+        "--margin-buffer-fraction",
+        str(args.margin_buffer_fraction),
+        "--min-liquidation-buffer",
+        str(args.min_liquidation_buffer),
         "--max-order-usdt",
         str(args.max_order_usdt),
     ]
@@ -137,6 +170,19 @@ def log(path: Path, message: str) -> None:
     print(line, flush=True)
     with path.open("a", encoding="utf-8") as log_file:
         log_file.write(line + "\n")
+
+
+def write_cycle_status(path: Path, *, status: str, command: str, detail: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "status": status,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "command": command,
+        "detail": detail,
+    }
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(path)
 
 
 if __name__ == "__main__":

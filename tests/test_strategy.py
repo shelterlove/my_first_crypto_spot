@@ -22,9 +22,10 @@ from futures_v1.strategy_core.strategy import FuturesV1Strategy
 
 
 EXPECTED_DIGESTS = {
-    "ETH/USDT": "2d9932ce3b9d845d",
-    "BNB/USDT": "e21f51aa21bda11b",
+    "ETH/USDT": "4d9f29ab377c6cc0",
+    "BNB/USDT": "25aa1eb465bc6190",
 }
+EXPECTED_ACTION_COUNTS = {"ETH/USDT": 26, "BNB/USDT": 26}
 
 
 def synthetic_daily(n: int = 520, start: float = 100.0, drift: float = 0.0007, amp: float = 0.06) -> pd.DataFrame:
@@ -89,7 +90,7 @@ def action_digest(symbol: str, start: float) -> str:
     )
     assert len(windows) == 2
     actions = pd.DataFrame(artifacts.get("action_logs", []))
-    assert len(actions) == 28
+    assert len(actions) == EXPECTED_ACTION_COUNTS[symbol]
     rows = actions[["symbol", "side", "quantity", "price", "reason"]].round(8).to_dict("records")
     return hashlib.sha256(json.dumps(rows, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
@@ -101,6 +102,13 @@ def test_strategy_has_clean_mro() -> None:
 def test_strategy_golden_master() -> None:
     assert action_digest("ETH/USDT", 1800.0) == EXPECTED_DIGESTS["ETH/USDT"]
     assert action_digest("BNB/USDT", 250.0) == EXPECTED_DIGESTS["BNB/USDT"]
+
+
+def test_research_gross_cap_does_not_change_default() -> None:
+    strategy = build_strategy("eth_bnb_futures_v1", 100.0, 20.0, 0.001)
+    assert strategy._apply_research_target_gross_cap(2.25) == 2.25
+    strategy.RESEARCH_TARGET_GROSS_CAP = 1.5
+    assert strategy._apply_research_target_gross_cap(2.25) == 1.5
 
 
 def main() -> None:
